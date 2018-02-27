@@ -20,6 +20,7 @@
 
 import logging
 import os
+import re
 import time
 import threading
 
@@ -49,6 +50,8 @@ vm_status_icons = {
     libvirt.VIR_DOMAIN_NOSTATE: "state_running",
     libvirt.VIR_DOMAIN_PMSUSPENDED: "state_paused",
 }
+
+IP_REGEX = re.compile('[0-9]*\.[0-9]*\.[0-9]*\.[0-9]*')
 
 
 class _SENTINEL(object):
@@ -1162,6 +1165,20 @@ class vmmDomain(vmmLibvirtObject):
     ########################
     # Libvirt API wrappers #
     ########################
+
+    def get_first_ip_addr(self):
+        try:
+            ifaces = self._backend.interfaceAddresses(source=1)
+            for iface in ifaces:
+                if iface != 'lo' and IP_REGEX.match(ifaces[iface]['addrs'][0]['addr']):
+                    return ifaces[iface]['addrs'][0]['addr']
+            else:
+                return "IP not found"
+        except libvirt.libvirtError as err:
+            if 'QEMU guest agent is not connected' in str(err):
+                return "qemu-guest-agent not running"
+            else:
+                return str(err)
 
     def _conn_tick_poll_param(self):
         return "pollvm"

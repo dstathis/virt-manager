@@ -640,10 +640,13 @@ class vmmManager(vmmGObjectUI):
             color = "#5b5b5b"
         return color
 
-    def _build_vm_markup(self, name, status):
+    def _build_vm_markup(self, name, status, ipaddr):
         domtext     = ("<span size='smaller' weight='bold'>%s</span>" %
                        util.xml_escape(name))
-        statetext   = "<span size='smaller'>%s</span>" % status
+        if status == 'Running':
+            statetext   = "<span size='smaller'>%s (%s)</span>" % (status, ipaddr)
+        else:
+            statetext   = "<span size='smaller'>%s</span>" % status
         return domtext + "\n" + statetext
 
     def _build_row(self, conn, vm):
@@ -659,7 +662,8 @@ class vmmManager(vmmGObjectUI):
         else:
             name = vm.get_name_or_title()
             status = vm.run_status()
-            markup = self._build_vm_markup(name, status)
+            ipaddr = vm.get_first_ip_addr()
+            markup = self._build_vm_markup(name, status, ipaddr)
             status_icon = vm.run_status_icon_name()
             hint = vm.get_description()
             color = None
@@ -741,11 +745,12 @@ class vmmManager(vmmGObjectUI):
 
             name = vm.get_name_or_title()
             status = vm.run_status()
+            ipaddr = vm.get_first_ip_addr()
 
             row[ROW_SORT_KEY] = name
             row[ROW_STATUS_ICON] = vm.run_status_icon_name()
             row[ROW_IS_VM_RUNNING] = vm.is_active()
-            row[ROW_MARKUP] = self._build_vm_markup(name, status)
+            row[ROW_MARKUP] = self._build_vm_markup(name, status, ipaddr)
 
             desc = vm.get_description()
             row[ROW_HINT] = util.xml_escape(desc)
