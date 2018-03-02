@@ -121,6 +121,8 @@ class vmmEngine(vmmGObject):
             self.config.on_stats_update_interval_changed(self.reschedule_timer))
         self.add_gsettings_handle(
             self.config.on_view_system_tray_changed(self.system_tray_changed))
+        self.add_gsettings_handle(
+            self.config.on_show_ip_changed(self.show_ip_changed))
 
         self.schedule_timer()
         self.load_stored_uris()
@@ -212,6 +214,11 @@ class vmmEngine(vmmGObject):
         systray_enabled = self.config.get_view_system_tray()
         if self.windows == 0 and not systray_enabled:
             # Show the manager so that the user can control the application
+            self._show_manager()
+
+    def show_ip_changed(self, *ignore):
+        showip_enabled = self.config.get_show_ip()
+        if self.windows == 0 and not showip_enabled:
             self._show_manager()
 
     def _add_default_conn(self):

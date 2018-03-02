@@ -34,6 +34,7 @@ class vmmPreferences(vmmGObjectUI):
         self._init_ui()
 
         self.refresh_view_system_tray()
+        self.refresh_show_ip()
         self.refresh_update_interval()
         self.refresh_console_accels()
         self.refresh_console_scaling()
@@ -61,6 +62,7 @@ class vmmPreferences(vmmGObjectUI):
             "on_prefs_close_clicked": self.close,
 
             "on_prefs_system_tray_toggled": self.change_view_system_tray,
+            "on_prefs_show_ip_toggled": self.change_show_ip,
             "on_prefs_stats_update_interval_changed": self.change_update_interval,
             "on_prefs_console_accels_toggled": self.change_console_accels,
             "on_prefs_console_scaling_changed": self.change_console_scaling,
@@ -177,6 +179,10 @@ class vmmPreferences(vmmGObjectUI):
     def refresh_view_system_tray(self):
         val = self.config.get_view_system_tray()
         self.widget("prefs-system-tray").set_active(bool(val))
+
+    def refresh_show_ip(self):
+        val = self.config.get_show_ip()
+        self.widget("prefs-show-ip").set_active(bool(val))
 
     def refresh_update_interval(self):
         self.widget("prefs-stats-update-interval").set_value(
@@ -329,6 +335,9 @@ class vmmPreferences(vmmGObjectUI):
 
     def change_view_system_tray(self, src):
         self.config.set_view_system_tray(src.get_active())
+
+    def change_show_ip(self, src):
+        self.config.set_show_ip(src.get_active())
 
     def change_update_interval(self, src):
         self.config.set_stats_update_interval(src.get_value_as_int())

@@ -331,6 +331,8 @@ class vmmManager(vmmGObjectUI):
         self.connmenu.show_all()
 
     def init_vmlist(self):
+        self.add_gsettings_handle(
+            self.config.on_show_ip_changed(self.show_ip_changed))
         vmlist = self.widget("vm-list")
         self.widget("vm-notebook").set_show_tabs(False)
 
@@ -462,6 +464,10 @@ class vmmManager(vmmGObjectUI):
     ####################
     # Action listeners #
     ####################
+
+    def show_ip_changed(self):
+        logging.debug("Updating show_ip")
+        # TODO Update the currently listed machines
 
     def window_resized(self, ignore, ignore2):
         if not self.is_visible():
@@ -643,7 +649,7 @@ class vmmManager(vmmGObjectUI):
     def _build_vm_markup(self, name, status, ipaddr):
         domtext     = ("<span size='smaller' weight='bold'>%s</span>" %
                        util.xml_escape(name))
-        if status == 'Running':
+        if status == 'Running' and self.config.get_show_ip():
             statetext   = "<span size='smaller'>%s (%s)</span>" % (status, ipaddr)
         else:
             statetext   = "<span size='smaller'>%s</span>" % status

@@ -1172,8 +1172,7 @@ class vmmDomain(vmmLibvirtObject):
             for iface in ifaces:
                 if iface != 'lo' and IP_REGEX.match(ifaces[iface]['addrs'][0]['addr']):
                     return ifaces[iface]['addrs'][0]['addr']
-            else:
-                return "IP not found"
+            return "IP not found"
         except libvirt.libvirtError as err:
             if 'QEMU guest agent is not connected' in str(err):
                 return "qemu-guest-agent not running"

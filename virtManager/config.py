@@ -396,6 +396,14 @@ class vmmConfig(object):
     def set_view_system_tray(self, val):
         self.conf.set("/system-tray", val)
 
+    # Display first IP
+    def on_show_ip_changed(self, cb):
+        return self.conf.notify_add("/show-ip", cb)
+    def get_show_ip(self):
+        return self.conf.get("/show-ip")
+    def set_show_ip(self, val):
+        self.conf.set("/show-ip", val)
+
 
     # Stats history and interval length
     def get_stats_history_length(self):
