@@ -2,20 +2,8 @@
 # Copyright 2009, 2013 Red Hat, Inc.
 # Cole Robinson <crobinso@redhat.com>
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 #
 
 import logging
@@ -71,7 +59,7 @@ DEVICE_DISK = "17"
 DEVICE_GRAPHICS = "24"
 
 # AllocationUnits mapping can be found in Appendix C here:
-# http://www.dmtf.org/standards/documents/CIM/DSP0004.pdf
+# https://www.dmtf.org/standards/documents/CIM/DSP0004.pdf
 
 
 OVF_NAMESPACES = {
@@ -216,7 +204,7 @@ def _import_file(conn, input_file):
 
     ifaces = []
     for node in _findall(vhnode, vhxpath % DEVICE_ETHERNET):
-        iface = virtinst.VirtualNetworkInterface(conn)
+        iface = virtinst.DeviceInterface(conn)
         # Just ignore 'source' info for now and choose the default
         net_model = _text(_find(node, "rasd:ResourceSubType"))
         if net_model and not net_model.isdigit():
@@ -236,7 +224,7 @@ def _import_file(conn, input_file):
             path = _lookup_disk_path(root, path)
             fmt = "vmdk"
 
-        disk = virtinst.VirtualDisk(conn)
+        disk = virtinst.DeviceDisk(conn)
         disk.path = path
         disk.driver_type = fmt
         disk.bus = bus
@@ -269,8 +257,8 @@ class ovf_parser(parser_class):
     """
     Support for OVF appliance configurations.
 
-    Whitepaper: http://www.vmware.com/pdf/ovf_whitepaper_specification.pdf
-    Spec: http://www.dmtf.org/standards/published_documents/DSP0243_1.0.0.pdf
+    Whitepaper: https://www.vmware.com/pdf/ovf_whitepaper_specification.pdf
+    Spec: https://www.dmtf.org/standards/published_documents/DSP0243_1.0.0.pdf
     """
     name = "ovf"
     suffix = ".ovf"

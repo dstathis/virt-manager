@@ -1,19 +1,7 @@
 # Copyright (C) 2013, 2014 Red Hat, Inc.
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import glob
 import traceback
@@ -221,7 +209,7 @@ class XMLParseTest(unittest.TestCase):
         check = self._make_checker(guest.resource)
         check("partition", None, "/virtualmachines/production")
 
-        check = self._make_checker(guest.get_devices("memballoon")[0])
+        check = self._make_checker(guest.devices.memballoon[0])
         check("model", "virtio", "none")
 
         check = self._make_checker(guest.memoryBacking)
@@ -264,7 +252,7 @@ class XMLParseTest(unittest.TestCase):
         check("offset", None, "utc")
         self.assertTrue(guest.clock.get_xml_config().startswith("<clock"))
 
-        seclabel = virtinst.Seclabel(guest.conn)
+        seclabel = virtinst.DomainSeclabel(guest.conn)
         guest.add_child(seclabel)
         seclabel.model = "testSecurity"
         seclabel.type = "static"
@@ -279,6 +267,10 @@ class XMLParseTest(unittest.TestCase):
         guest.cpu.add_feature("x2apic", "forbid")
         guest.cpu.set_topology_defaults(guest.vcpus)
         self.assertTrue(guest.cpu.get_xml_config().startswith("<cpu"))
+        self.assertEqual(guest.cpu.get_xml_id(), "./cpu")
+        self.assertEqual(guest.cpu.get_xml_idx(), 0)
+        self.assertEqual(guest.get_xml_id(), ".")
+        self.assertEqual(guest.get_xml_idx(), 0)
 
         self.assertTrue(guest.os.get_xml_config().startswith("<os"))
 
@@ -341,12 +333,12 @@ class XMLParseTest(unittest.TestCase):
 
     def testAlterDisk(self):
         """
-        Test changing VirtualDisk() parameters after parsing
+        Test changing DeviceDisk() parameters after parsing
         """
         guest, outfile = self._get_test_content("change-disk")
 
         def _get_disk(target):
-            for disk in guest.get_devices("disk"):
+            for disk in guest.devices.disk:
                 if disk.target == target:
                     return disk
 
@@ -360,7 +352,7 @@ class XMLParseTest(unittest.TestCase):
         check("bus", "ide", "usb")
         check("removable", None, False, True)
 
-        disk = guest.get_devices("disk")[1]
+        disk = guest.devices.disk[1]
         check = self._make_checker(disk.seclabels[1])
         check("model", "dac")
         check("relabel", None, True)
@@ -432,22 +424,22 @@ class XMLParseTest(unittest.TestCase):
     def testSingleDisk(self):
         xml = ("""<disk type="file" device="disk"><source file="/a.img"/>\n"""
                """<target dev="hda" bus="ide"/></disk>\n""")
-        d = virtinst.VirtualDisk(self.conn, parsexml=xml)
+        d = virtinst.DeviceDisk(self.conn, parsexml=xml)
         self._set_and_check(d, "target", "hda", "hdb")
         self.assertEqual(xml.replace("hda", "hdb"), d.get_xml_config())
 
     def testAlterChars(self):
         guest, outfile = self._get_test_content("change-chars")
 
-        serial1     = guest.get_devices("serial")[0]
-        serial2     = guest.get_devices("serial")[1]
-        parallel1   = guest.get_devices("parallel")[0]
-        parallel2   = guest.get_devices("parallel")[1]
-        console1    = guest.get_devices("console")[0]
-        console2    = guest.get_devices("console")[1]
-        channel1    = guest.get_devices("channel")[0]
-        channel2    = guest.get_devices("channel")[1]
-        channel3    = guest.get_devices("channel")[2]
+        serial1     = guest.devices.serial[0]
+        serial2     = guest.devices.serial[1]
+        parallel1   = guest.devices.parallel[0]
+        parallel2   = guest.devices.parallel[1]
+        console1    = guest.devices.console[0]
+        console2    = guest.devices.console[1]
+        channel1    = guest.devices.channel[0]
+        channel2    = guest.devices.channel[1]
+        channel3    = guest.devices.channel[2]
 
         check = self._make_checker(serial1)
         check("type", "null", "udp")
@@ -499,16 +491,18 @@ class XMLParseTest(unittest.TestCase):
         check("source_channel", "org.spice-space.webdav.0", "test.1")
         check("target_type", "virtio")
         check("target_name", "org.spice-space.webdav.0", "test.2")
+        self.assertEqual(channel3.get_xml_id(), "./devices/channel[3]")
+        self.assertEqual(channel3.get_xml_idx(), 2)
 
         self._alter_compare(guest.get_xml_config(), outfile)
 
     def testAlterControllers(self):
         guest, outfile = self._get_test_content("change-controllers")
 
-        dev1 = guest.get_devices("controller")[0]
-        dev2 = guest.get_devices("controller")[1]
-        dev3 = guest.get_devices("controller")[2]
-        dev4 = guest.get_devices("controller")[3]
+        dev1 = guest.devices.controller[0]
+        dev2 = guest.devices.controller[1]
+        dev3 = guest.devices.controller[2]
+        dev4 = guest.devices.controller[3]
 
         check = self._make_checker(dev1)
         check("type", "ide")
@@ -535,11 +529,11 @@ class XMLParseTest(unittest.TestCase):
     def testAlterNics(self):
         guest, outfile = self._get_test_content("change-nics")
 
-        dev1 = guest.get_devices("interface")[0]
-        dev2 = guest.get_devices("interface")[1]
-        dev3 = guest.get_devices("interface")[2]
-        dev4 = guest.get_devices("interface")[3]
-        dev5 = guest.get_devices("interface")[4]
+        dev1 = guest.devices.interface[0]
+        dev2 = guest.devices.interface[1]
+        dev3 = guest.devices.interface[2]
+        dev4 = guest.devices.interface[3]
+        dev5 = guest.devices.interface[4]
 
         check = self._make_checker(dev1)
         check("type", "user")
@@ -587,8 +581,8 @@ class XMLParseTest(unittest.TestCase):
     def testAlterInputs(self):
         guest, outfile = self._get_test_content("change-inputs")
 
-        dev1 = guest.get_devices("input")[0]
-        dev2 = guest.get_devices("input")[1]
+        dev1 = guest.devices.input[0]
+        dev2 = guest.devices.input[1]
 
         check = self._make_checker(dev1)
         check("type", "mouse", "tablet")
@@ -604,12 +598,12 @@ class XMLParseTest(unittest.TestCase):
     def testAlterGraphics(self):
         guest, outfile = self._get_test_content("change-graphics")
 
-        dev1 = guest.get_devices("graphics")[0]
-        dev2 = guest.get_devices("graphics")[1]
-        dev3 = guest.get_devices("graphics")[2]
-        dev4 = guest.get_devices("graphics")[3]
-        dev5 = guest.get_devices("graphics")[4]
-        dev6 = guest.get_devices("graphics")[5]
+        dev1 = guest.devices.graphics[0]
+        dev2 = guest.devices.graphics[1]
+        dev3 = guest.devices.graphics[2]
+        dev4 = guest.devices.graphics[3]
+        dev5 = guest.devices.graphics[4]
+        dev6 = guest.devices.graphics[5]
 
         check = self._make_checker(dev1)
         check("type", "vnc")
@@ -669,9 +663,9 @@ class XMLParseTest(unittest.TestCase):
     def testAlterVideos(self):
         guest, outfile = self._get_test_content("change-videos")
 
-        dev1 = guest.get_devices("video")[0]
-        dev2 = guest.get_devices("video")[1]
-        dev3 = guest.get_devices("video")[2]
+        dev1 = guest.devices.video[0]
+        dev2 = guest.devices.video[1]
+        dev3 = guest.devices.video[2]
 
         check = self._make_checker(dev1)
         check("model", "vmvga", "vga")
@@ -697,10 +691,10 @@ class XMLParseTest(unittest.TestCase):
         guest = virtinst.Guest(self.conn,
                                parsexml=open(infile).read())
 
-        dev1 = guest.get_devices("hostdev")[0]
-        dev2 = guest.get_devices("hostdev")[1]
-        dev3 = guest.get_devices("hostdev")[2]
-        dev4 = guest.get_devices("hostdev")[3]
+        dev1 = guest.devices.hostdev[0]
+        dev2 = guest.devices.hostdev[1]
+        dev3 = guest.devices.hostdev[2]
+        dev4 = guest.devices.hostdev[3]
 
         check = self._make_checker(dev1)
         check("type", "usb", "foo", "usb")
@@ -740,7 +734,7 @@ class XMLParseTest(unittest.TestCase):
     def testAlterWatchdogs(self):
         guest, outfile = self._get_test_content("change-watchdogs")
 
-        dev1 = guest.get_devices("watchdog")[0]
+        dev1 = guest.devices.watchdog[0]
         check = self._make_checker(dev1)
         check("model", "ib700", "i6300esb")
         check("action", "none", "poweroff")
@@ -750,13 +744,13 @@ class XMLParseTest(unittest.TestCase):
     def testAlterFilesystems(self):
         guest, outfile = self._get_test_content("change-filesystems")
 
-        dev1 = guest.get_devices("filesystem")[0]
-        dev2 = guest.get_devices("filesystem")[1]
-        dev3 = guest.get_devices("filesystem")[2]
-        dev4 = guest.get_devices("filesystem")[3]
-        dev5 = guest.get_devices("filesystem")[4]
-        dev6 = guest.get_devices("filesystem")[5]
-        dev7 = guest.get_devices("filesystem")[6]
+        dev1 = guest.devices.filesystem[0]
+        dev2 = guest.devices.filesystem[1]
+        dev3 = guest.devices.filesystem[2]
+        dev4 = guest.devices.filesystem[3]
+        dev5 = guest.devices.filesystem[4]
+        dev6 = guest.devices.filesystem[5]
+        dev7 = guest.devices.filesystem[6]
 
         check = self._make_checker(dev1)
         check("type", None, "mount")
@@ -812,9 +806,9 @@ class XMLParseTest(unittest.TestCase):
         guest = virtinst.Guest(self.conn,
                                parsexml=open(infile).read())
 
-        dev1 = guest.get_devices("sound")[0]
-        dev2 = guest.get_devices("sound")[1]
-        dev3 = guest.get_devices("sound")[2]
+        dev1 = guest.devices.sound[0]
+        dev2 = guest.devices.sound[1]
+        dev3 = guest.devices.sound[2]
 
         check = self._make_checker(dev1)
         check("model", "sb16", "ac97")
@@ -830,11 +824,11 @@ class XMLParseTest(unittest.TestCase):
     def testAlterAddr(self):
         guest, outfile = self._get_test_content("change-addr")
 
-        dev1 = guest.get_devices("disk")[0]
-        dev2 = guest.get_devices("controller")[0]
-        dev3 = guest.get_devices("channel")[0]
-        dev4 = guest.get_devices("disk")[1]
-        dev5 = guest.get_devices("memory")[0]
+        dev1 = guest.devices.disk[0]
+        dev2 = guest.devices.controller[0]
+        dev3 = guest.devices.channel[0]
+        dev4 = guest.devices.disk[1]
+        dev5 = guest.devices.memory[0]
 
         check = self._make_checker(dev1.address)
         check("type", "drive", "pci")
@@ -880,8 +874,8 @@ class XMLParseTest(unittest.TestCase):
     def testAlterSmartCard(self):
         guest, outfile = self._get_test_content("change-smartcard")
 
-        dev1 = guest.get_devices("smartcard")[0]
-        dev2 = guest.get_devices("smartcard")[1]
+        dev1 = guest.devices.smartcard[0]
+        dev2 = guest.devices.smartcard[1]
 
         check = self._make_checker(dev1)
         check("type", None, "tcp")
@@ -895,8 +889,8 @@ class XMLParseTest(unittest.TestCase):
     def testAlterRedirdev(self):
         guest, outfile = self._get_test_content("change-redirdev")
 
-        dev1 = guest.get_devices("redirdev")[0]
-        dev2 = guest.get_devices("redirdev")[1]
+        dev1 = guest.devices.redirdev[0]
+        dev2 = guest.devices.redirdev[1]
 
         check = self._make_checker(dev1)
         check("bus", "usb", "baz", "usb")
@@ -911,7 +905,7 @@ class XMLParseTest(unittest.TestCase):
     def testAlterTPM(self):
         guest, outfile = self._get_test_content("change-tpm")
 
-        dev1 = guest.get_devices("tpm")[0]
+        dev1 = guest.devices.tpm[0]
 
         check = self._make_checker(dev1)
         check("type", "passthrough", "foo", "passthrough")
@@ -923,7 +917,7 @@ class XMLParseTest(unittest.TestCase):
     def testAlterRNG_EGD(self):
         guest, outfile = self._get_test_content("change-rng-egd")
 
-        dev1 = guest.get_devices("rng")[0]
+        dev1 = guest.devices.rng[0]
 
         check = self._make_checker(dev1)
         check("type", "egd")
@@ -942,7 +936,7 @@ class XMLParseTest(unittest.TestCase):
     def testAlterRNG_Random(self):
         guest, outfile = self._get_test_content("change-rng-random")
 
-        dev1 = guest.get_devices("rng")[0]
+        dev1 = guest.devices.rng[0]
 
         check = self._make_checker(dev1)
         check("type", "random", "random")
@@ -954,7 +948,7 @@ class XMLParseTest(unittest.TestCase):
     def testConsoleCompat(self):
         guest, outfile = self._get_test_content("console-compat")
 
-        dev1 = guest.get_devices("console")[0]
+        dev1 = guest.devices.console[0]
         check = self._make_checker(dev1)
         check("source_path", "/dev/pts/4")
         check("_tty", "/dev/pts/4", "foo", "/dev/pts/4")
@@ -964,7 +958,7 @@ class XMLParseTest(unittest.TestCase):
     def testPanicDevice(self):
         guest, outfile = self._get_test_content("change-panic-device")
 
-        dev1 = guest.get_devices("panic")[0]
+        dev1 = guest.devices.panic[0]
 
         check = self._make_checker(dev1)
         check("type", "isa", None, "isa")
@@ -982,7 +976,10 @@ class XMLParseTest(unittest.TestCase):
         check = self._make_checker(guest.xmlns_qemu.args[1])
         check("value", "bar,baz=wib wob", "testval")
         guest.xmlns_qemu.args.add_new().value = "additional-arg"
+        arg0 = guest.xmlns_qemu.args[0]
         guest.xmlns_qemu.remove_child(guest.xmlns_qemu.args[0])
+        self.assertEqual(arg0.get_xml_config(),
+                "<qemu:arg xmlns:qemu=\"http://libvirt.org/schemas/domain/qemu/1.0\" value=\"-somenewarg\"/>\n")
 
         check = self._make_checker(guest.xmlns_qemu.envs[0])
         check("name", "SOMEENV")
@@ -997,14 +994,14 @@ class XMLParseTest(unittest.TestCase):
         guest, outfile = self._get_test_content("add-devices")
 
         # Basic removal of existing device
-        rmdev = guest.get_devices("disk")[2]
+        rmdev = guest.devices.disk[2]
         guest.remove_device(rmdev)
 
         # Basic device add
-        guest.add_device(virtinst.VirtualWatchdog(self.conn))
+        guest.add_device(virtinst.DeviceWatchdog(self.conn))
 
         # Test adding device with child properties (address value)
-        adddev = virtinst.VirtualNetworkInterface(self.conn)
+        adddev = virtinst.DeviceInterface(self.conn)
         adddev.type = "network"
         adddev.source = "default"
         adddev.macaddr = "1A:2A:3A:4A:5A:6A"
@@ -1016,7 +1013,7 @@ class XMLParseTest(unittest.TestCase):
         guest.add_device(adddev)
 
         # Test adding device built from parsed XML
-        guest.add_device(virtinst.VirtualAudio(self.conn,
+        guest.add_device(virtinst.DeviceSound(self.conn,
             parsexml="""<sound model='pcspk'/>"""))
 
         self._alter_compare(guest.get_xml_config(), outfile)
@@ -1024,28 +1021,28 @@ class XMLParseTest(unittest.TestCase):
     def testChangeKVMMedia(self):
         guest, outfile = self._get_test_content("change-media", kvm=True)
 
-        disk = guest.get_devices("disk")[0]
+        disk = guest.devices.disk[0]
         check = self._make_checker(disk)
         check("path", None, "/dev/default-pool/default-vol")
         disk.sync_path_props()
 
-        disk = guest.get_devices("disk")[1]
+        disk = guest.devices.disk[1]
         check = self._make_checker(disk)
         check("path", None, "/dev/default-pool/default-vol")
         check("path", "/dev/default-pool/default-vol", "/dev/disk-pool/diskvol1")
         disk.sync_path_props()
 
-        disk = guest.get_devices("disk")[2]
+        disk = guest.devices.disk[2]
         check = self._make_checker(disk)
         check("path", None, "/dev/disk-pool/diskvol1")
         disk.sync_path_props()
 
-        disk = guest.get_devices("disk")[3]
+        disk = guest.devices.disk[3]
         check = self._make_checker(disk)
         check("path", None, "/dev/default-pool/default-vol")
         disk.sync_path_props()
 
-        disk = guest.get_devices("disk")[4]
+        disk = guest.devices.disk[4]
         check = self._make_checker(disk)
         check("path", None, "/dev/disk-pool/diskvol1")
         disk.sync_path_props()
@@ -1418,7 +1415,3 @@ class XMLParseTest(unittest.TestCase):
         guest = virtinst.Guest(self.conn, parsexml=open(infile).read())
 
         utils.diff_compare(guest.get_xml_config(), outfile)
-
-
-if __name__ == "__main__":
-    unittest.main()

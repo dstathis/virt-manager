@@ -1,28 +1,12 @@
-#
 # Copyright (C) 2006, 2013, 2014 Red Hat, Inc.
 # Copyright (C) 2006 Hugh O. Brock <hbrock@redhat.com>
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
-#
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import logging
 
-from gi.repository import GObject
-
-from virtinst import VirtualDisk
+from virtinst import DeviceDisk
 
 from .baseclass import vmmGObjectUI
 from .mediacombo import vmmMediaCombo
@@ -32,7 +16,7 @@ from .addstorage import vmmAddStorage
 
 class vmmChooseCD(vmmGObjectUI):
     __gsignals__ = {
-        "cdrom-chosen": (GObject.SignalFlags.RUN_FIRST, None, [object, str])
+        "cdrom-chosen": (vmmGObjectUI.RUN_FIRST, None, [object, str])
     }
 
     def __init__(self, vm, disk):
@@ -116,7 +100,7 @@ class vmmChooseCD(vmmGObjectUI):
             return self.err.val_err(_("Invalid Media Path"),
                                     _("A media path must be specified."))
 
-        names = VirtualDisk.path_in_use_by(self.disk.conn, path)
+        names = DeviceDisk.path_in_use_by(self.disk.conn, path)
         if names:
             res = self.err.yes_no(
                     _('Disk "%s" is already in use by other guests %s') %

@@ -1,22 +1,8 @@
-#
 # Copyright (C) 2006, 2013 Red Hat, Inc.
 # Copyright (C) 2006 Daniel P. Berrange <berrange@redhat.com>
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
-#
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import glob
 import os
@@ -25,11 +11,11 @@ import socket
 import urllib.parse
 
 from gi.repository import Gio
-from gi.repository import GObject
 from gi.repository import Gtk
 
 from . import uiutil
 from .baseclass import vmmGObjectUI
+from .connmanager import vmmConnectionManager
 
 (HV_QEMU,
 HV_XEN,
@@ -39,37 +25,28 @@ HV_BHYVE,
 HV_VZ,
 HV_CUSTOM) = range(7)
 
-(CONN_SSH,
-CONN_TCP,
-CONN_TLS) = range(3)
-
-
-def current_user():
-    try:
-        import getpass
-        return getpass.getuser()
-    except Exception:
-        return ""
-
-
-def default_conn_user(conn):
-    if conn == CONN_SSH:
-        return "root"
-    return current_user()
-
 
 class vmmConnect(vmmGObjectUI):
-    __gsignals__ = {
-        "completed": (GObject.SignalFlags.RUN_FIRST, None, [str, bool]),
-        "cancelled": (GObject.SignalFlags.RUN_FIRST, None, []),
-    }
+    @classmethod
+    def get_instance(cls, parentobj):
+        try:
+            if not cls._instance:
+                cls._instance = vmmConnect()
+            return cls._instance
+        except Exception as e:
+            parentobj.err.show_err(
+                    _("Error launching connect dialog: %s") % str(e))
+
+    @classmethod
+    def is_initialized(cls):
+        return bool(cls._instance)
 
     def __init__(self):
         vmmGObjectUI.__init__(self, "connect.ui", "vmm-open-connection")
+        self._cleanup_on_app_close()
 
         self.builder.connect_signals({
             "on_hypervisor_changed": self.hypervisor_changed,
-            "on_transport_changed": self.transport_changed,
             "on_hostname_combo_changed": self.hostname_combo_changed,
             "on_connect_remote_toggled": self.connect_remote_toggled,
             "on_username_entry_changed": self.username_changed,
@@ -130,7 +107,6 @@ class vmmConnect(vmmGObjectUI):
     def cancel(self, ignore1=None, ignore2=None):
         logging.debug("Cancelling open connection")
         self.close()
-        self.emit("cancelled")
         return 1
 
     def close(self, ignore1=None, ignore2=None):
@@ -144,10 +120,13 @@ class vmmConnect(vmmGObjectUI):
             self.browser = None
 
 
-    def show(self, parent, reset_state=True):
+    def show(self, parent):
         logging.debug("Showing open connection")
-        if reset_state:
-            self.reset_state()
+        if self.topwin.is_visible():
+            self.topwin.present()
+            return
+
+        self.reset_state()
         self.topwin.set_transient_for(parent)
         self.topwin.present()
         self.start_browse()
@@ -182,14 +161,6 @@ class vmmConnect(vmmGObjectUI):
             return model[it][0] == -1
         combo.set_row_separator_func(sepfunc)
 
-        combo = self.widget("transport")
-        model = Gtk.ListStore(str)
-        model.append(["SSH"])
-        model.append(["TCP (SASL, Kerberos)"])
-        model.append(["SSL/TLS " + _("with certificates")])
-        combo.set_model(model)
-        uiutil.init_combo_text_column(combo, 0)
-
         # Hostname combo box entry
         hostListModel = Gtk.ListStore(str, str, str)
         host = self.widget("hostname")
@@ -199,7 +170,6 @@ class vmmConnect(vmmGObjectUI):
 
     def reset_state(self):
         self.set_default_hypervisor()
-        self.widget("transport").set_active(0)
         self.widget("autoconnect").set_sensitive(True)
         self.widget("autoconnect").set_active(True)
         self.widget("hostname").get_model().clear()
@@ -351,14 +321,14 @@ class vmmConnect(vmmGObjectUI):
             self.widget("username-entry"), show_remote)
         uiutil.set_grid_row_visible(
             self.widget("hostname"), show_remote)
-        uiutil.set_grid_row_visible(
-            self.widget("transport"), show_remote)
         if not show_remote:
             self.widget("connect-remote").set_active(False)
 
         uiutil.set_grid_row_visible(self.widget("uri-label"), not is_custom)
         uiutil.set_grid_row_visible(self.widget("uri-entry"), is_custom)
         if is_custom:
+            label = self.widget("uri-label").get_text()
+            self.widget("uri-entry").set_text(label)
             self.widget("uri-entry").grab_focus()
         self.populate_uri()
 
@@ -368,29 +338,19 @@ class vmmConnect(vmmGObjectUI):
     def connect_remote_toggled(self, src_ignore):
         is_remote = self.is_remote()
         self.widget("hostname").set_sensitive(is_remote)
-        self.widget("transport").set_sensitive(is_remote)
         self.widget("autoconnect").set_active(not is_remote)
         self.widget("username-entry").set_sensitive(is_remote)
 
-        self.populate_default_user()
-        self.populate_uri()
-
-    def transport_changed(self, src_ignore):
-        self.populate_default_user()
+        if is_remote and not self.widget("username-entry").get_text():
+            self.widget("username-entry").set_text("root")
         self.populate_uri()
 
     def populate_uri(self):
         uri = self.generate_uri()
         self.widget("uri-label").set_text(uri)
 
-    def populate_default_user(self):
-        conn = self.widget("transport").get_active()
-        default_user = default_conn_user(conn)
-        self.widget("username-entry").set_text(default_user)
-
     def generate_uri(self):
         hv = uiutil.get_list_selection(self.widget("hypervisor"))
-        conn = self.widget("transport").get_active()
         host = self.widget("hostname").get_child().get_text().strip()
         user = self.widget("username-entry").get_text()
         is_remote = self.is_remote()
@@ -415,17 +375,10 @@ class vmmConnect(vmmGObjectUI):
             host = "[%s]" % host
         addrstr += host
 
-        hoststr = ""
-        if not is_remote:
-            hoststr = ":///"
+        if is_remote:
+            hoststr = "+ssh://" + addrstr + "/"
         else:
-            if conn == CONN_TLS:
-                hoststr = "+tls://"
-            if conn == CONN_SSH:
-                hoststr = "+ssh://"
-            if conn == CONN_TCP:
-                hoststr = "+tcp://"
-            hoststr += addrstr + "/"
+            hoststr = ":///"
 
         uri = hvstr + hoststr
         if hv in (HV_QEMU, HV_BHYVE, HV_VZ):
@@ -445,21 +398,47 @@ class vmmConnect(vmmGObjectUI):
 
         return True
 
+    def _conn_open_completed(self, conn, ConnectError):
+        if not ConnectError:
+            self.close()
+            self.reset_finish_cursor()
+            return
+
+        msg, details, title = ConnectError
+        msg += "\n\n"
+        msg += _("Would you still like to remember this connection?")
+
+        remember = self.err.show_err(msg, details, title,
+                buttons=Gtk.ButtonsType.YES_NO,
+                dialog_type=Gtk.MessageType.QUESTION, modal=True)
+        self.reset_finish_cursor()
+        if remember:
+            self.close()
+        else:
+            vmmConnectionManager.get_instance().remove_conn(conn.get_uri())
+
     def open_conn(self, ignore):
         if not self.validate():
             return
 
         auto = False
         if self.widget("autoconnect").get_sensitive():
-            auto = self.widget("autoconnect").get_active()
+            auto = bool(self.widget("autoconnect").get_active())
         if self.widget("uri-label").is_visible():
             uri = self.generate_uri()
         else:
             uri = self.widget("uri-entry").get_text()
 
         logging.debug("Generate URI=%s, auto=%s", uri, auto)
-        self.close()
-        self.emit("completed", uri, auto)
+
+        conn = vmmConnectionManager.get_instance().add_conn(uri)
+        conn.set_autoconnect(auto)
+        if conn.is_active():
+            return
+
+        conn.connect_once("open-completed", self._conn_open_completed)
+        self.set_finish_cursor()
+        conn.open()
 
     def sanitize_hostname(self, host):
         if host == "linux" or host == "localhost":

@@ -1,41 +1,27 @@
-#
 # Copyright (C) 2006-2008, 2013, 2014 Red Hat, Inc.
 # Copyright (C) 2006 Daniel P. Berrange <berrange@redhat.com>
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
-#
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import logging
 import traceback
 
-from gi.repository import GObject
-from gi.repository import Gtk
 from gi.repository import Gdk
+from gi.repository import Gtk
 
 import libvirt
 
 import virtinst
 from virtinst import util
-from virtinst import VirtualRNGDevice
+from virtinst import DeviceRng
 
 from . import vmmenu
 from . import uiutil
 from .baseclass import vmmGObjectUI
 from .addhardware import vmmAddHardware
 from .choosecd import vmmChooseCD
+from .engine import vmmEngine
 from .fsdetails import vmmFSDetails
 from .gfxdetails import vmmGraphicsDetails
 from .netlist import vmmNetworkList
@@ -163,11 +149,29 @@ remove_pages = [HW_LIST_TYPE_NIC, HW_LIST_TYPE_INPUT,
 _remove_tooltip = _("Remove this device from the virtual machine")
 
 
+def _calculate_disk_bus_index(disklist):
+    # Iterate through all disks and calculate what number they are
+    # This sets disk.disk_bus_index which is not a standard property
+    idx_mapping = {}
+    for dev in disklist:
+        devtype = dev.device
+        bus = dev.bus
+        key = devtype + (bus or "")
+
+        if key not in idx_mapping:
+            idx_mapping[key] = 1
+
+        dev.disk_bus_index = idx_mapping[key]
+        idx_mapping[key] += 1
+
+    return disklist
+
+
 def _label_for_device(dev):
-    devtype = dev.virtual_device_type
+    devtype = dev.DEVICE_TYPE
 
     if devtype == "disk":
-        busstr = virtinst.VirtualDisk.pretty_disk_bus(dev.bus) or ""
+        busstr = virtinst.DeviceDisk.pretty_disk_bus(dev.bus) or ""
 
         if dev.device == "floppy":
             devstr = _("Floppy")
@@ -224,7 +228,8 @@ def _label_for_device(dev):
     if devtype == "graphics":
         return _("Display %s") % dev.pretty_type_simple(dev.type)
     if devtype == "redirdev":
-        return _("%s Redirector %s") % (dev.bus.upper(), dev.vmmindex + 1)
+        return _("%s Redirector %s") % (dev.bus.upper(),
+                dev.get_xml_idx() + 1)
     if devtype == "hostdev":
         return dev.pretty_name()
     if devtype == "sound":
@@ -255,7 +260,7 @@ def _label_for_device(dev):
 
 
 def _icon_for_device(dev):
-    devtype = dev.virtual_device_type
+    devtype = dev.DEVICE_TYPE
 
     if devtype == "disk":
         if dev.device == "cdrom":
@@ -339,29 +344,29 @@ def _label_for_os_type(os_type):
 
 class vmmDetails(vmmGObjectUI):
     __gsignals__ = {
-        "action-save-domain": (GObject.SignalFlags.RUN_FIRST, None, [str, str]),
-        "action-destroy-domain": (GObject.SignalFlags.RUN_FIRST, None, [str, str]),
-        "action-suspend-domain": (GObject.SignalFlags.RUN_FIRST, None, [str, str]),
-        "action-resume-domain": (GObject.SignalFlags.RUN_FIRST, None, [str, str]),
-        "action-run-domain": (GObject.SignalFlags.RUN_FIRST, None, [str, str]),
-        "action-shutdown-domain": (GObject.SignalFlags.RUN_FIRST, None, [str, str]),
-        "action-reset-domain": (GObject.SignalFlags.RUN_FIRST, None, [str, str]),
-        "action-reboot-domain": (GObject.SignalFlags.RUN_FIRST, None, [str, str]),
-        "action-exit-app": (GObject.SignalFlags.RUN_FIRST, None, []),
-        "action-view-manager": (GObject.SignalFlags.RUN_FIRST, None, []),
-        "action-migrate-domain": (GObject.SignalFlags.RUN_FIRST, None, [str, str]),
-        "action-delete-domain": (GObject.SignalFlags.RUN_FIRST, None, [str, str]),
-        "action-clone-domain": (GObject.SignalFlags.RUN_FIRST, None, [str, str]),
-        "details-closed": (GObject.SignalFlags.RUN_FIRST, None, []),
-        "details-opened": (GObject.SignalFlags.RUN_FIRST, None, []),
-        "customize-finished": (GObject.SignalFlags.RUN_FIRST, None, []),
-        "inspection-refresh": (GObject.SignalFlags.RUN_FIRST, None, [str, str]),
+        "customize-finished": (vmmGObjectUI.RUN_FIRST, None, []),
+        "closed": (vmmGObjectUI.RUN_FIRST, None, []),
     }
+
+    @classmethod
+    def get_instance(cls, parentobj, vm):
+        try:
+            # Maintain one dialog per VM
+            connkey = vm.get_connkey()
+            if cls._instances is None:
+                cls._instances = {}
+            if connkey not in cls._instances:
+                cls._instances[connkey] = vmmDetails(vm)
+            return cls._instances[connkey]
+        except Exception as e:
+            if not parentobj:
+                raise
+            parentobj.err.show_err(
+                    _("Error launching details: %s") % str(e))
 
     def __init__(self, vm, parent=None):
         vmmGObjectUI.__init__(self, "details.ui", "vmm-details")
         self.vm = vm
-        self.conn = self.vm.conn
 
         self.is_customize_dialog = False
         if parent:
@@ -377,7 +382,8 @@ class vmmDetails(vmmGObjectUI):
             self.widget("details-menubar").hide()
             pages = self.widget("details-pages")
             pages.set_current_page(DETAILS_PAGE_DETAILS)
-
+        else:
+            self.conn.connect("vm-removed", self._vm_removed)
 
         self.active_edits = []
 
@@ -440,7 +446,8 @@ class vmmDetails(vmmGObjectUI):
         self.oldhwkey = None
         self.addhwmenu = None
         self._addhwmenuitems = None
-        self.keycombo_menu = None
+        self._shutdownmenu = None
+        self._vmmenu = None
         self.init_menus()
         self.init_details()
 
@@ -470,16 +477,6 @@ class vmmDetails(vmmGObjectUI):
             "on_details_cancel_customize_clicked": self._customize_cancel_clicked,
 
             "on_details_menu_virtual_manager_activate": self.control_vm_menu,
-            "on_details_menu_run_activate": self.control_vm_run,
-            "on_details_menu_poweroff_activate": self.control_vm_shutdown,
-            "on_details_menu_reboot_activate": self.control_vm_reboot,
-            "on_details_menu_save_activate": self.control_vm_save,
-            "on_details_menu_reset_activate": self.control_vm_reset,
-            "on_details_menu_destroy_activate": self.control_vm_destroy,
-            "on_details_menu_pause_activate": self.control_vm_pause,
-            "on_details_menu_clone_activate": self.control_vm_clone,
-            "on_details_menu_migrate_activate": self.control_vm_migrate,
-            "on_details_menu_delete_activate": self.control_vm_delete,
             "on_details_menu_screenshot_activate": self.control_vm_screenshot,
             "on_details_menu_usb_redirection": self.control_vm_usb_redirection,
             "on_details_menu_view_toolbar_activate": self.toggle_toolbar,
@@ -605,6 +602,12 @@ class vmmDetails(vmmGObjectUI):
 
         self.hw_selected()
         self.refresh_vm_state()
+        self.activate_default_page()
+
+
+    @property
+    def conn(self):
+        return self.vm.conn
 
     def _cleanup(self):
         self.oldhwkey = None
@@ -626,12 +629,16 @@ class vmmDetails(vmmGObjectUI):
         self.console = None
         self.snapshots.cleanup()
         self.snapshots = None
+        self._shutdownmenu.destroy()
+        self._shutdownmenu = None
+        self._vmmenu.destroy()
+        self._vmmenu = None
 
         if self._window_size:
             self.vm.set_details_window_size(*self._window_size)
 
+        self.conn.disconnect_by_obj(self)
         self.vm = None
-        self.conn = None
         self.addhwmenu = None
         self._addhwmenuitems = None
 
@@ -649,7 +656,7 @@ class vmmDetails(vmmGObjectUI):
         if vis:
             return
 
-        self.emit("details-opened")
+        vmmEngine.get_instance().increment_window_counter()
         self.refresh_vm_state()
 
     def customize_finish(self, src):
@@ -657,6 +664,10 @@ class vmmDetails(vmmGObjectUI):
         if self.has_unapplied_changes(self.get_hw_row()):
             return
         self.emit("customize-finished")
+
+    def _vm_removed(self, _conn, connkey):
+        if self.vm.get_connkey() == connkey:
+            self.cleanup()
 
     def _customize_cancel(self):
         logging.debug("Asking to cancel customization")
@@ -697,7 +708,8 @@ class vmmDetails(vmmGObjectUI):
             except Exception:
                 logging.error("Failure when disconnecting from desktop server")
 
-        self.emit("details-closed")
+        self.emit("closed")
+        vmmEngine.get_instance().decrement_window_counter()
         return 1
 
     def is_visible(self):
@@ -710,18 +722,18 @@ class vmmDetails(vmmGObjectUI):
 
     def init_menus(self):
         # Virtual Machine menu
-        menu = vmmenu.VMShutdownMenu(self, lambda: self.vm)
-        self.widget("control-shutdown").set_menu(menu)
+        self._shutdownmenu = vmmenu.VMShutdownMenu(self, lambda: self.vm)
+        self.widget("control-shutdown").set_menu(self._shutdownmenu)
         self.widget("control-shutdown").set_icon_name("system-shutdown")
 
         topmenu = self.widget("details-vm-menu")
         submenu = topmenu.get_submenu()
-        newmenu = vmmenu.VMActionMenu(self, lambda: self.vm,
-                                        show_open=False)
+        self._vmmenu = vmmenu.VMActionMenu(
+                self, lambda: self.vm, show_open=False)
         for child in submenu.get_children():
             submenu.remove(child)
-            newmenu.add(child)
-        topmenu.set_submenu(newmenu)
+            self._vmmenu.add(child)
+        topmenu.set_submenu(self._vmmenu)
         topmenu.show_all()
 
         # Add HW popup menu
@@ -974,9 +986,9 @@ class vmmDetails(vmmGObjectUI):
         model.set_sort_column_id(1, Gtk.SortType.ASCENDING)
         model.append([_("Application Default"), "1", "appdefault", False])
         model.append([_("Hypervisor Default"), "2",
-            virtinst.CPU.SPECIAL_MODE_HV_DEFAULT, False])
+            virtinst.DomainCpu.SPECIAL_MODE_HV_DEFAULT, False])
         model.append([_("Clear CPU configuration"), "3",
-            virtinst.CPU.SPECIAL_MODE_CLEAR, False])
+            virtinst.DomainCpu.SPECIAL_MODE_CLEAR, False])
         model.append([None, None, None, True])
         for name in caps.get_cpu_values(self.vm.get_arch()):
             model.append([name, name, name, False])
@@ -989,8 +1001,15 @@ class vmmDetails(vmmGObjectUI):
         vmmAddHardware.build_disk_cache_combo(self.vm, disk_cache)
 
         # Disk io combo
-        disk_io = self.widget("disk-io")
-        vmmAddHardware.build_disk_io_combo(self.vm, disk_io)
+        combo = self.widget("disk-io")
+        model = Gtk.ListStore(str, str)
+        combo.set_model(model)
+        uiutil.init_combo_text_column(combo, 1)
+        model.set_sort_column_id(0, Gtk.SortType.ASCENDING)
+        model.append([None, _("Hypervisor default")])
+        for m in virtinst.DeviceDisk.io_modes:
+            model.append([m, m])
+        combo.set_active(0)
 
         # Disk bus combo
         disk_bus = self.widget("disk-bus")
@@ -1361,11 +1380,12 @@ class vmmDetails(vmmGObjectUI):
     # External action listeners #
     #############################
 
-    def view_manager(self, src_ignore):
-        self.emit("action-view-manager")
+    def view_manager(self, _src):
+        from .manager import vmmManager
+        vmmManager.get_instance(self).show()
 
-    def exit_app(self, src_ignore):
-        self.emit("action-exit-app")
+    def exit_app(self, _src):
+        vmmEngine.get_instance().exit_app()
 
     def activate_default_console_page(self):
         pages = self.widget("details-pages")
@@ -1380,6 +1400,8 @@ class vmmDetails(vmmGObjectUI):
 
     # activate_* are called from engine.py via CLI options
     def activate_default_page(self):
+        if self.is_customize_dialog:
+            return
         pages = self.widget("details-pages")
         pages.set_current_page(DETAILS_PAGE_CONSOLE)
         self.activate_default_console_page()
@@ -1433,13 +1455,9 @@ class vmmDetails(vmmGObjectUI):
         self.set_pause_state(not do_pause)
 
         if do_pause:
-            self.emit("action-suspend-domain",
-                      self.vm.conn.get_uri(),
-                      self.vm.get_connkey())
+            vmmenu.VMActionUI.suspend(self, self.vm)
         else:
-            self.emit("action-resume-domain",
-                      self.vm.conn.get_uri(),
-                      self.vm.get_connkey())
+            vmmenu.VMActionUI.resume(self, self.vm)
 
     def control_vm_menu(self, src_ignore):
         can_usb = bool(self.console.details_viewer_has_usb_redirection() and
@@ -1449,40 +1467,10 @@ class vmmDetails(vmmGObjectUI):
     def control_vm_run(self, src_ignore):
         if self.has_unapplied_changes(self.get_hw_row()):
             return
-        self.emit("action-run-domain",
-                  self.vm.conn.get_uri(), self.vm.get_connkey())
+        vmmenu.VMActionUI.run(self, self.vm)
 
     def control_vm_shutdown(self, src_ignore):
-        self.emit("action-shutdown-domain",
-                  self.vm.conn.get_uri(), self.vm.get_connkey())
-
-    def control_vm_reboot(self, src_ignore):
-        self.emit("action-reboot-domain",
-                  self.vm.conn.get_uri(), self.vm.get_connkey())
-
-    def control_vm_save(self, src_ignore):
-        self.emit("action-save-domain",
-                  self.vm.conn.get_uri(), self.vm.get_connkey())
-
-    def control_vm_reset(self, src_ignore):
-        self.emit("action-reset-domain",
-                  self.vm.conn.get_uri(), self.vm.get_connkey())
-
-    def control_vm_destroy(self, src_ignore):
-        self.emit("action-destroy-domain",
-                  self.vm.conn.get_uri(), self.vm.get_connkey())
-
-    def control_vm_clone(self, src_ignore):
-        self.emit("action-clone-domain",
-                  self.vm.conn.get_uri(), self.vm.get_connkey())
-
-    def control_vm_migrate(self, src_ignore):
-        self.emit("action-migrate-domain",
-                  self.vm.conn.get_uri(), self.vm.get_connkey())
-
-    def control_vm_delete(self, src_ignore):
-        self.emit("action-delete-domain",
-                  self.vm.conn.get_uri(), self.vm.get_connkey())
+        vmmenu.VMActionUI.shutdown(self, self.vm)
 
     def control_vm_screenshot(self, src):
         ignore = src
@@ -1567,7 +1555,7 @@ class vmmDetails(vmmGObjectUI):
         text = cpu_list.get_child().get_text()
 
         if self.widget("cpu-copy-host").get_active():
-            return virtinst.CPU.SPECIAL_MODE_HOST_MODEL
+            return virtinst.DomainCpu.SPECIAL_MODE_HOST_MODEL
 
         key = None
         for row in cpu_list.get_model():
@@ -1582,9 +1570,11 @@ class vmmDetails(vmmGObjectUI):
             return self.config.get_default_cpu_setting(for_cpu=True)
         return key
 
-    def inspection_refresh(self, src_ignore):
-        self.emit("inspection-refresh",
-                  self.vm.conn.get_uri(), self.vm.get_connkey())
+    def inspection_refresh(self, _src):
+        from .inspection import vmmInspection
+        inspection = vmmInspection.get_instance()
+        if inspection:
+            inspection.vm_refresh(self.vm)
 
 
     ##############################
@@ -2422,61 +2412,63 @@ class vmmDetails(vmmGObjectUI):
                 self.widget(name).set_value(int(IdMap_proper))
 
     def refresh_inspection_page(self):
-        inspection_supported = self.config.support_inspection
+        inspection_supported = self.config.inspection_supported()
         uiutil.set_grid_row_visible(self.widget("details-overview-error"),
-                                       self.vm.inspection.error)
-        if self.vm.inspection.error:
-            msg = _("Error while inspecting the guest configuration")
-            self.widget("details-overview-error").set_text(msg)
+                                    bool(self.vm.inspection.errorstr))
+        if self.vm.inspection.errorstr:
+            self.widget("details-overview-error").set_text(
+                    self.vm.inspection.errorstr)
+            inspection_supported = False
+
+        self.widget("details-inspection-os").set_visible(inspection_supported)
+        self.widget("details-inspection-apps").set_visible(inspection_supported)
+        if not inspection_supported:
+            return
 
         # Operating System (ie. inspection data)
-        self.widget("details-inspection-os").set_visible(inspection_supported)
-        if inspection_supported:
-            hostname = self.vm.inspection.hostname
-            if not hostname:
-                hostname = _("unknown")
-            self.widget("inspection-hostname").set_text(hostname)
-            os_type = self.vm.inspection.os_type
-            if not os_type:
-                os_type = "unknown"
-            self.widget("inspection-type").set_text(_label_for_os_type(os_type))
-            product_name = self.vm.inspection.product_name
-            if not product_name:
-                product_name = _("unknown")
-            self.widget("inspection-product-name").set_text(product_name)
+        hostname = self.vm.inspection.hostname
+        if not hostname:
+            hostname = _("unknown")
+        self.widget("inspection-hostname").set_text(hostname)
+        os_type = self.vm.inspection.os_type
+        if not os_type:
+            os_type = "unknown"
+        self.widget("inspection-type").set_text(_label_for_os_type(os_type))
+        product_name = self.vm.inspection.product_name
+        if not product_name:
+            product_name = _("unknown")
+        self.widget("inspection-product-name").set_text(product_name)
 
         # Applications (also inspection data)
-        self.widget("details-inspection-apps").set_visible(inspection_supported)
-        if inspection_supported:
-            apps = self.vm.inspection.applications or []
-            apps_list = self.widget("inspection-apps")
-            apps_model = apps_list.get_model()
-            apps_model.clear()
-            for app in apps:
-                name = ""
-                if app["app_name"]:
-                    name = app["app_name"]
-                if app["app_display_name"]:
-                    name = app["app_display_name"]
-                version = ""
-                if app["app_epoch"] > 0:
-                    version += str(app["app_epoch"]) + ":"
-                if app["app_version"]:
-                    version += app["app_version"]
-                if app["app_release"]:
-                    version += "-" + app["app_release"]
-                summary = ""
-                if app["app_summary"]:
-                    summary = app["app_summary"]
-                elif app["app_description"]:
-                    summary = app["app_description"]
-                    pos = summary.find("\n")
-                    if pos > -1:
-                        summary = _("%(summary)s ...") % {
-                            "summary": summary[0:pos]
-                        }
+        apps = self.vm.inspection.applications or []
+        apps_list = self.widget("inspection-apps")
+        apps_model = apps_list.get_model()
+        apps_model.clear()
+        for app in apps:
+            name = ""
+            if app["app_name"]:
+                name = app["app_name"]
+            if app["app_display_name"]:
+                name = app["app_display_name"]
+            version = ""
+            if app["app_epoch"] > 0:
+                version += str(app["app_epoch"]) + ":"
+            if app["app_version"]:
+                version += app["app_version"]
+            if app["app_release"]:
+                version += "-" + app["app_release"]
+            summary = ""
+            if app["app_summary"]:
+                summary = app["app_summary"]
+            elif app["app_description"]:
+                summary = app["app_description"]
+                pos = summary.find("\n")
+                if pos > -1:
+                    summary = _("%(summary)s ...") % {
+                        "summary": summary[0:pos]
+                    }
 
-                apps_model.append([name, version, summary])
+            apps_model.append([name, version, summary])
 
     def refresh_stats_page(self):
         def _multi_color(text1, text2):
@@ -2573,7 +2565,7 @@ class vmmDetails(vmmGObjectUI):
         else:
             uiutil.set_list_selection(
                 self.widget("cpu-model"),
-                virtinst.CPU.SPECIAL_MODE_HV_DEFAULT, column=2)
+                virtinst.DomainCpu.SPECIAL_MODE_HV_DEFAULT, column=2)
 
         # Warn about hyper-threading setting
         cpu_model = self.get_config_cpu_model()
@@ -2634,8 +2626,8 @@ class vmmDetails(vmmGObjectUI):
             if vol:
                 size = vol.get_pretty_capacity()
 
-        is_cdrom = (devtype == virtinst.VirtualDisk.DEVICE_CDROM)
-        is_floppy = (devtype == virtinst.VirtualDisk.DEVICE_FLOPPY)
+        is_cdrom = (devtype == virtinst.DeviceDisk.DEVICE_CDROM)
+        is_floppy = (devtype == virtinst.DeviceDisk.DEVICE_FLOPPY)
         is_usb = (bus == "usb")
 
         can_set_removable = (is_usb and (self.conn.is_qemu() or
@@ -2657,7 +2649,7 @@ class vmmDetails(vmmGObjectUI):
         uiutil.set_grid_row_visible(self.widget("disk-removable"),
                                        can_set_removable)
 
-        is_lun = disk.device == virtinst.VirtualDisk.DEVICE_LUN
+        is_lun = disk.device == virtinst.DeviceDisk.DEVICE_LUN
         uiutil.set_grid_row_visible(self.widget("disk-sgio"), is_lun)
         if is_lun:
             self.build_disk_sgio(self.vm, self.widget("disk-sgio"))
@@ -2708,7 +2700,7 @@ class vmmDetails(vmmGObjectUI):
         if not inp:
             return
 
-        dev = vmmAddHardware.label_for_input_device(inp.type, inp.bus)
+        dev = inp.pretty_name(inp.type, inp.bus)
 
         mode = None
         if inp.type == "tablet":
@@ -2785,7 +2777,7 @@ class vmmDetails(vmmGObjectUI):
 
         dev_type = tpmdev.type
         self.widget("tpm-dev-type").set_text(
-                virtinst.VirtualTPMDevice.get_pretty_type(dev_type))
+                virtinst.DeviceTpm.get_pretty_type(dev_type))
 
         # Device type specific properties, only show if apply to the cur dev
         show_ui("device_path")
@@ -2796,7 +2788,7 @@ class vmmDetails(vmmGObjectUI):
             return
 
         model = dev.model or "isa"
-        pmodel = virtinst.VirtualPanicDevice.get_pretty_model(model)
+        pmodel = virtinst.DevicePanic.get_pretty_model(model)
         self.widget("panic-model").set_text(pmodel)
 
     def refresh_rng_page(self):
@@ -2814,17 +2806,17 @@ class vmmDetails(vmmGObjectUI):
         }
         rewriter = {
             "rng-type": lambda x:
-            VirtualRNGDevice.get_pretty_type(x),
+            DeviceRng.get_pretty_type(x),
             "rng-backend-type": lambda x:
-            VirtualRNGDevice.get_pretty_backend_type(x),
+            DeviceRng.get_pretty_backend_type(x),
         }
 
         def set_visible(widget, v):
             uiutil.set_grid_row_visible(self.widget(widget), v)
 
-        is_egd = dev.type == VirtualRNGDevice.TYPE_EGD
-        udp = dev.backend_type == VirtualRNGDevice.BACKEND_TYPE_UDP
-        bind = VirtualRNGDevice.BACKEND_MODE_BIND in dev.backend_mode()
+        is_egd = dev.type == DeviceRng.TYPE_EGD
+        udp = dev.backend_type == DeviceRng.BACKEND_TYPE_UDP
+        bind = DeviceRng.BACKEND_MODE_BIND in dev.backend_mode()
 
         set_visible("rng-device", not is_egd)
         set_visible("rng-mode", is_egd and not udp)
@@ -2846,7 +2838,7 @@ class vmmDetails(vmmGObjectUI):
                 uiutil.set_grid_row_visible(self.widget(k), val != "-")
 
         if is_egd and not udp:
-            mode = VirtualRNGDevice.get_pretty_mode(dev.backend_mode()[0])
+            mode = DeviceRng.get_pretty_mode(dev.backend_mode()[0])
             self.widget("rng-mode").set_text(mode)
 
     def refresh_char_page(self):
@@ -2854,9 +2846,9 @@ class vmmDetails(vmmGObjectUI):
         if not chardev:
             return
 
-        show_target_type = not (chardev.virtual_device_type in
+        show_target_type = not (chardev.DEVICE_TYPE in
                                 ["serial", "parallel"])
-        show_target_name = chardev.virtual_device_type == "channel"
+        show_target_name = chardev.DEVICE_TYPE == "channel"
 
         def show_ui(param, val=None):
             widgetname = "char-" + param.replace("_", "-")
@@ -2887,10 +2879,10 @@ class vmmDetails(vmmGObjectUI):
                 ret += ":%s" % str(port)
             return ret
 
-        char_type = chardev.virtual_device_type.capitalize()
+        char_type = chardev.DEVICE_TYPE.capitalize()
         target_port = chardev.target_port
         dev_type = chardev.type or "pty"
-        primary = hasattr(chardev, "virtmanager_console_dup")
+        primary = self.vm.serial_is_console_dup(chardev)
 
         typelabel = ""
         if char_type == "serial":
@@ -2905,7 +2897,7 @@ class vmmDetails(vmmGObjectUI):
             typelabel = _("%s Device") % char_type.capitalize()
 
         if (target_port is not None and
-                chardev.virtual_device_type == "console"):
+                chardev.DEVICE_TYPE == "console"):
             typelabel += " %s" % (int(target_port) + 1)
         if target_port is not None and not show_target_type:
             typelabel += " %s" % (int(target_port) + 1)
@@ -3008,7 +3000,7 @@ class vmmDetails(vmmGObjectUI):
         if controller.type == "scsi":
             model = self.widget("controller-device-list").get_model()
             model.clear()
-            for disk in self.vm.get_disk_devices():
+            for disk in _calculate_disk_bus_index(self.vm.xmlobj.devices.disk):
                 if disk.address.compare_controller(controller, disk.bus):
                     can_remove = False
                     name = _label_for_device(disk)
@@ -3122,7 +3114,7 @@ class vmmDetails(vmmGObjectUI):
 
         add_hw_list_option(_("Overview"), HW_LIST_TYPE_GENERAL, "computer")
         if not self.is_customize_dialog:
-            if self.config.support_inspection:
+            if self.config.inspection_supported():
                 add_hw_list_option(_("OS information"),
                     HW_LIST_TYPE_INSPECTION, "computer")
             add_hw_list_option(_("Performance"), HW_LIST_TYPE_STATS,
@@ -3180,28 +3172,39 @@ class vmmDetails(vmmGObjectUI):
             add_hw_list_option(insertAt, label, hwtype, dev, icon)
 
 
-        for dev in self.vm.get_disk_devices():
+        consoles = self.vm.xmlobj.devices.console
+        serials = self.vm.xmlobj.devices.serial
+        if serials and consoles and self.vm.serial_is_console_dup(serials[0]):
+            consoles.pop(0)
+
+        for dev in _calculate_disk_bus_index(self.vm.xmlobj.devices.disk):
             update_hwlist(HW_LIST_TYPE_DISK, dev)
-        for dev in self.vm.get_network_devices():
+        for dev in self.vm.xmlobj.devices.interface:
             update_hwlist(HW_LIST_TYPE_NIC, dev)
-        for dev in self.vm.get_input_devices():
+        for dev in self.vm.xmlobj.devices.input:
             update_hwlist(HW_LIST_TYPE_INPUT, dev)
-        for dev in self.vm.get_graphics_devices():
+        for dev in self.vm.xmlobj.devices.graphics:
             update_hwlist(HW_LIST_TYPE_GRAPHICS, dev)
-        for dev in self.vm.get_sound_devices():
+        for dev in self.vm.xmlobj.devices.sound:
             update_hwlist(HW_LIST_TYPE_SOUND, dev)
-        for dev in self.vm.get_char_devices():
+        for dev in serials:
             update_hwlist(HW_LIST_TYPE_CHAR, dev)
-        for dev in self.vm.get_hostdev_devices():
+        for dev in self.vm.xmlobj.devices.parallel:
+            update_hwlist(HW_LIST_TYPE_CHAR, dev)
+        for dev in consoles:
+            update_hwlist(HW_LIST_TYPE_CHAR, dev)
+        for dev in self.vm.xmlobj.devices.channel:
+            update_hwlist(HW_LIST_TYPE_CHAR, dev)
+        for dev in self.vm.xmlobj.devices.hostdev:
             update_hwlist(HW_LIST_TYPE_HOSTDEV, dev)
-        for dev in self.vm.get_redirdev_devices():
+        for dev in self.vm.xmlobj.devices.redirdev:
             update_hwlist(HW_LIST_TYPE_REDIRDEV, dev)
-        for dev in self.vm.get_video_devices():
+        for dev in self.vm.xmlobj.devices.video:
             update_hwlist(HW_LIST_TYPE_VIDEO, dev)
-        for dev in self.vm.get_watchdog_devices():
+        for dev in self.vm.xmlobj.devices.watchdog:
             update_hwlist(HW_LIST_TYPE_WATCHDOG, dev)
 
-        for dev in self.vm.get_controller_devices():
+        for dev in self.vm.xmlobj.devices.controller:
             # skip USB2 ICH9 companion controllers
             if dev.model in ["ich9-uhci1", "ich9-uhci2", "ich9-uhci3"]:
                 continue
@@ -3214,15 +3217,15 @@ class vmmDetails(vmmGObjectUI):
 
             update_hwlist(HW_LIST_TYPE_CONTROLLER, dev)
 
-        for dev in self.vm.get_filesystem_devices():
+        for dev in self.vm.xmlobj.devices.filesystem:
             update_hwlist(HW_LIST_TYPE_FILESYSTEM, dev)
-        for dev in self.vm.get_smartcard_devices():
+        for dev in self.vm.xmlobj.devices.smartcard:
             update_hwlist(HW_LIST_TYPE_SMARTCARD, dev)
-        for dev in self.vm.get_tpm_devices():
+        for dev in self.vm.xmlobj.devices.tpm:
             update_hwlist(HW_LIST_TYPE_TPM, dev)
-        for dev in self.vm.get_rng_devices():
+        for dev in self.vm.xmlobj.devices.rng:
             update_hwlist(HW_LIST_TYPE_RNG, dev)
-        for dev in self.vm.get_panic_devices():
+        for dev in self.vm.xmlobj.devices.panic:
             update_hwlist(HW_LIST_TYPE_PANIC, dev)
 
         devs = list(range(len(hw_list_model)))
@@ -3251,7 +3254,7 @@ class vmmDetails(vmmGObjectUI):
             icon = _icon_for_device(dev)
             label = _label_for_device(dev)
 
-            ret.append([dev.vmmidstr, label, icon, False, True])
+            ret.append([dev.get_xml_id(), label, icon, False, True])
 
         if not ret:
             ret.append([None, _("No bootable devices"), None, False, False])

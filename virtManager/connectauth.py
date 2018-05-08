@@ -1,25 +1,13 @@
-#
 # Copyright (C) 2012-2013 Red Hat, Inc.
 # Copyright (C) 2012 Cole Robinson <crobinso@redhat.com>
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
-#
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
+import collections
 import logging
 import os
+import re
 import time
 
 from gi.repository import GLib
@@ -52,22 +40,21 @@ def do_we_have_session():
     return False
 
 
-def creds_dialog(conn, creds):
+def creds_dialog(creds, cbdata):
     """
     Thread safe wrapper for libvirt openAuth user/pass callback
     """
-
     retipc = []
 
-    def wrapper(fn, conn, creds):
+    def wrapper(fn, creds, cbdata):
         try:
-            ret = fn(conn, creds)
+            ret = fn(creds, cbdata)
         except Exception:
             logging.exception("Error from creds dialog")
             ret = -1
         retipc.append(ret)
 
-    GLib.idle_add(wrapper, _creds_dialog_main, conn, creds)
+    GLib.idle_add(wrapper, _creds_dialog_main, creds, cbdata)
 
     while not retipc:
         time.sleep(.1)
@@ -75,10 +62,11 @@ def creds_dialog(conn, creds):
     return retipc[0]
 
 
-def _creds_dialog_main(conn, creds):
+def _creds_dialog_main(creds, cbdata):
     """
     Libvirt openAuth callback for username/password credentials
     """
+    _conn = cbdata
     from gi.repository import Gtk
 
     dialog = Gtk.Dialog(_("Authentication required"), None, 0,
@@ -102,24 +90,22 @@ def _creds_dialog_main(conn, creds):
 
     row = 0
     for cred in creds:
-        if (cred[0] == libvirt.VIR_CRED_AUTHNAME or
-            cred[0] == libvirt.VIR_CRED_PASSPHRASE):
-            prompt = cred[1]
-            if not prompt.endswith(":"):
-                prompt += ":"
-
-            text_label = Gtk.Label(label=prompt)
-            text_label.set_alignment(0.0, 0.5)
-
-            label.append(text_label)
-        else:
+        # Libvirt virConnectCredential
+        credtype, prompt, _challenge, _defresult, _result = cred
+        noecho = credtype in [
+                libvirt.VIR_CRED_PASSPHRASE, libvirt.VIR_CRED_NOECHOPROMPT]
+        if not prompt:
+            logging.error("No prompt for auth credtype=%s", credtype)
             return -1
 
+        prompt += ": "
+        text_label = Gtk.Label(label=prompt)
+        text_label.set_alignment(0.0, 0.5)
+        label.append(text_label)
+
         ent = Gtk.Entry()
-        if cred[0] == libvirt.VIR_CRED_PASSPHRASE:
+        if noecho:
             ent.set_visibility(False)
-        elif conn.get_uri_username():
-            ent.set_text(conn.get_uri_username())
         ent.connect("activate", _on_ent_activate)
         entry.append(ent)
 
@@ -162,6 +148,71 @@ def acquire_tgt():
                                 "org.freedesktop.KrbAuthDialog", None)
         ret = ka.acquireTgt("(s)", "")
     except Exception as e:
-        logging.info("Cannot acquire tgt" + str(e))
+        logging.info("Cannot acquire tgt %s", str(e))
         ret = False
     return ret
+
+
+def connect_error(conn, errmsg, tb, warnconsole):
+    """
+    Format connection error message
+    """
+    errmsg = errmsg.strip(" \n")
+    tb = tb.strip(" \n")
+    hint = ""
+    show_errmsg = True
+    config = conn.config
+
+    if conn.is_remote():
+        logging.debug("connect_error: conn transport=%s",
+            conn.get_uri_transport())
+        if re.search(r"nc: .* -- 'U'", tb):
+            hint += _("The remote host requires a version of netcat/nc "
+                      "which supports the -U option.")
+            show_errmsg = False
+        elif (conn.get_uri_transport() == "ssh" and
+              re.search(r"ssh-askpass", tb)):
+
+            askpass = (config.askpass_package and
+                       config.askpass_package[0] or
+                       "openssh-askpass")
+            hint += _("You need to install %s or "
+                      "similar to connect to this host.") % askpass
+            show_errmsg = False
+        else:
+            hint += _("Verify that the 'libvirtd' daemon is running "
+                      "on the remote host.")
+
+    elif conn.is_xen():
+        hint += _("Verify that:\n"
+                  " - A Xen host kernel was booted\n"
+                  " - The Xen service has been started")
+
+    else:
+        if warnconsole:
+            hint += _("Could not detect a local session: if you are "
+                      "running virt-manager over ssh -X or VNC, you "
+                      "may not be able to connect to libvirt as a "
+                      "regular user. Try running as root.")
+            show_errmsg = False
+        elif re.search(r"libvirt-sock", tb):
+            hint += _("Verify that the 'libvirtd' daemon is running.")
+            show_errmsg = False
+
+    msg = _("Unable to connect to libvirt %s." % conn.get_uri())
+    if show_errmsg:
+        msg += "\n\n%s" % errmsg
+    if hint:
+        msg += "\n\n%s" % hint
+
+    msg = msg.strip("\n")
+    details = msg
+    details += "\n\n"
+    details += "Libvirt URI is: %s\n\n" % conn.get_uri()
+    details += tb
+
+    title = _("Virtual Machine Manager Connection Failure")
+
+    ConnectError = collections.namedtuple("ConnectError",
+            ["msg", "details", "title"])
+    return ConnectError(msg, details, title)

@@ -3,20 +3,8 @@
 #
 # Copyright 2014 Red Hat, Inc.
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import logging
 import re
@@ -24,8 +12,12 @@ import re
 from .xmlbuilder import XMLBuilder, XMLChildProperty, XMLProperty
 
 
+########################################
+# Genering <enum> and <value> handling #
+########################################
+
 class _Value(XMLBuilder):
-    _XML_ROOT_NAME = "value"
+    XML_NAME = "value"
     value = XMLProperty(".")
 
 
@@ -37,7 +29,7 @@ class _HasValues(XMLBuilder):
 
 
 class _Enum(_HasValues):
-    _XML_ROOT_NAME = "enum"
+    XML_NAME = "enum"
     name = XMLProperty("./@name")
 
 
@@ -54,27 +46,81 @@ class _CapsBlock(_HasValues):
 
 
 def _make_capsblock(xml_root_name):
+    """
+    Build a class object representing a list of <enum> in the XML. For
+    example, domcapabilities may have a block like:
+
+    <graphics supported='yes'>
+      <enum name='type'>
+        <value>sdl</value>
+        <value>vnc</value>
+        <value>spice</value>
+      </enum>
+    </graphics>
+
+    To build a class that tracks that whole <graphics> block, call this
+    like _make_capsblock("graphics")
+    """
     class TmpClass(_CapsBlock):
         pass
-    setattr(TmpClass, "_XML_ROOT_NAME", xml_root_name)
+    setattr(TmpClass, "XML_NAME", xml_root_name)
     return TmpClass
 
 
+#############################
+# Misc toplevel XML classes #
+#############################
+
 class _OS(_CapsBlock):
-    _XML_ROOT_NAME = "os"
+    XML_NAME = "os"
     loader = XMLChildProperty(_make_capsblock("loader"), is_single=True)
 
 
 class _Devices(_CapsBlock):
-    _XML_ROOT_NAME = "devices"
+    XML_NAME = "devices"
     hostdev = XMLChildProperty(_make_capsblock("hostdev"), is_single=True)
     disk = XMLChildProperty(_make_capsblock("disk"), is_single=True)
 
 
 class _Features(_CapsBlock):
-    _XML_ROOT_NAME = "features"
+    XML_NAME = "features"
     gic = XMLChildProperty(_make_capsblock("gic"), is_single=True)
 
+
+###############
+# CPU classes #
+###############
+
+class _CPUModel(XMLBuilder):
+    XML_NAME = "model"
+    model = XMLProperty(".")
+    usable = XMLProperty("./@usable", is_yesno=True)
+
+
+class _CPUMode(XMLBuilder):
+    XML_NAME = "mode"
+    name = XMLProperty("./@name")
+    models = XMLChildProperty(_CPUModel)
+
+    def get_model(self, name):
+        for model in self.models:
+            if model.model == name:
+                return model
+
+
+class _CPU(XMLBuilder):
+    XML_NAME = "cpu"
+    modes = XMLChildProperty(_CPUMode)
+
+    def get_mode(self, name):
+        for mode in self.modes:
+            if mode.name == name:
+                return mode
+
+
+#################################
+# DomainCapabilities main class #
+#################################
 
 class DomainCapabilities(XMLBuilder):
     @staticmethod
@@ -161,8 +207,9 @@ class DomainCapabilities(XMLBuilder):
                 "yes" in self.os.loader.get_enum("readonly").get_values())
 
 
-    _XML_ROOT_NAME = "domainCapabilities"
+    XML_NAME = "domainCapabilities"
     os = XMLChildProperty(_OS, is_single=True)
+    cpu = XMLChildProperty(_CPU, is_single=True)
     devices = XMLChildProperty(_Devices, is_single=True)
 
     arch = XMLProperty("./arch")

@@ -1,22 +1,8 @@
-#
 # Copyright (C) 2006, 2013, 2014 Red Hat, Inc.
 # Copyright (C) 2006 Daniel P. Berrange <berrange@redhat.com>
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
-#
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import logging
 import os
@@ -26,30 +12,15 @@ import threading
 
 import libvirt
 
-from gi.repository import GObject
-
 from virtinst import DomainCapabilities
 from virtinst import DomainSnapshot
 from virtinst import Guest
 from virtinst import util
-from virtinst import VirtualController
-from virtinst import VirtualDisk
+from virtinst import DeviceController
+from virtinst import DeviceDisk
 
 from .libvirtobject import vmmLibvirtObject
-
-if not hasattr(libvirt, "VIR_DOMAIN_PMSUSPENDED"):
-    setattr(libvirt, "VIR_DOMAIN_PMSUSPENDED", 7)
-
-vm_status_icons = {
-    libvirt.VIR_DOMAIN_BLOCKED: "state_running",
-    libvirt.VIR_DOMAIN_CRASHED: "state_shutoff",
-    libvirt.VIR_DOMAIN_PAUSED: "state_paused",
-    libvirt.VIR_DOMAIN_RUNNING: "state_running",
-    libvirt.VIR_DOMAIN_SHUTDOWN: "state_shutoff",
-    libvirt.VIR_DOMAIN_SHUTOFF: "state_shutoff",
-    libvirt.VIR_DOMAIN_NOSTATE: "state_running",
-    libvirt.VIR_DOMAIN_PMSUSPENDED: "state_paused",
-}
+from .libvirtenummap import LibvirtEnumMap
 
 IP_REGEX = re.compile('[0-9]*\.[0-9]*\.[0-9]*\.[0-9]*')
 
@@ -61,26 +32,26 @@ class _SENTINEL(object):
 def compare_device(origdev, newdev, idx):
     devprops = {
         "disk":          ["target", "bus"],
-        "interface":     ["macaddr", "vmmindex"],
-        "input":         ["bus", "type", "vmmindex"],
-        "sound":         ["model", "vmmindex"],
-        "video":         ["model", "vmmindex"],
-        "watchdog":      ["vmmindex"],
-        "hostdev":       ["type", "managed", "vmmindex",
+        "interface":     ["macaddr", "xmlindex"],
+        "input":         ["bus", "type", "xmlindex"],
+        "sound":         ["model", "xmlindex"],
+        "video":         ["model", "xmlindex"],
+        "watchdog":      ["xmlindex"],
+        "hostdev":       ["type", "managed", "xmlindex",
                             "product", "vendor",
                             "function", "domain", "slot"],
         "serial":        ["type", "target_port"],
         "parallel":      ["type", "target_port"],
         "console":       ["type", "target_type", "target_port"],
-        "graphics":      ["type", "vmmindex"],
+        "graphics":      ["type", "xmlindex"],
         "controller":    ["type", "index"],
         "channel":       ["type", "target_name"],
-        "filesystem":    ["target", "vmmindex"],
-        "smartcard":     ["mode", "vmmindex"],
-        "redirdev":      ["bus", "type", "vmmindex"],
-        "tpm":           ["type", "vmmindex"],
-        "rng":           ["type", "vmmindex"],
-        "panic":         ["type", "vmmindex"],
+        "filesystem":    ["target", "xmlindex"],
+        "smartcard":     ["mode", "xmlindex"],
+        "redirdev":      ["bus", "type", "xmlindex"],
+        "tpm":           ["type", "xmlindex"],
+        "rng":           ["type", "xmlindex"],
+        "panic":         ["type", "xmlindex"],
     }
 
     if id(origdev) == id(newdev):
@@ -89,11 +60,12 @@ def compare_device(origdev, newdev, idx):
     if not isinstance(origdev, type(newdev)):
         return False
 
-    for devprop in devprops[origdev.virtual_device_type]:
-        origval = getattr(origdev, devprop)
-        if devprop == "vmmindex":
+    for devprop in devprops[origdev.DEVICE_TYPE]:
+        if devprop == "xmlindex":
+            origval = origdev.get_xml_idx()
             newval = idx
         else:
+            origval = getattr(origdev, devprop)
             newval = getattr(newdev, devprop)
 
         if origval != newval:
@@ -103,7 +75,7 @@ def compare_device(origdev, newdev, idx):
 
 
 def _find_device(guest, origdev):
-    devlist = guest.get_devices(origdev.virtual_device_type)
+    devlist = getattr(guest.devices, origdev.DEVICE_TYPE)
     for idx, dev in enumerate(devlist):
         if compare_device(origdev, dev, idx):
             return dev
@@ -162,7 +134,7 @@ class vmmInspectionData(object):
         self.product_variant = None
         self.icon = None
         self.applications = None
-        self.error = False
+        self.errorstr = None
 
 
 class vmmDomainSnapshot(vmmLibvirtObject):
@@ -207,13 +179,13 @@ class vmmDomainSnapshot(vmmLibvirtObject):
 
     def run_status(self):
         status = DomainSnapshot.state_str_to_int(self.get_xmlobj().state)
-        return vmmDomain.pretty_run_status(status)
+        return LibvirtEnumMap.pretty_run_status(status, False)
     def run_status_icon_name(self):
         status = DomainSnapshot.state_str_to_int(self.get_xmlobj().state)
-        if status not in vm_status_icons:
+        if status not in LibvirtEnumMap.VM_STATUS_ICONS:
             logging.debug("Unknown status %d, using NOSTATE", status)
             status = libvirt.VIR_DOMAIN_NOSTATE
-        return vm_status_icons[status]
+        return LibvirtEnumMap.VM_STATUS_ICONS[status]
 
     def is_current(self):
         return self._backend.isCurrent()
@@ -232,77 +204,10 @@ class vmmDomain(vmmLibvirtObject):
     backed by a virtinst.Guest object for new VM 'customize before install'
     """
     __gsignals__ = {
-        "resources-sampled": (GObject.SignalFlags.RUN_FIRST, None, []),
-        "inspection-changed": (GObject.SignalFlags.RUN_FIRST, None, []),
-        "pre-startup": (GObject.SignalFlags.RUN_FIRST, None, [object]),
+        "resources-sampled": (vmmLibvirtObject.RUN_FIRST, None, []),
+        "inspection-changed": (vmmLibvirtObject.RUN_FIRST, None, []),
+        "pre-startup": (vmmLibvirtObject.RUN_FIRST, None, [object]),
     }
-
-    @staticmethod
-    def pretty_run_status(status, has_saved=False):
-        if status == libvirt.VIR_DOMAIN_RUNNING:
-            return _("Running")
-        elif status == libvirt.VIR_DOMAIN_PAUSED:
-            return _("Paused")
-        elif status == libvirt.VIR_DOMAIN_SHUTDOWN:
-            return _("Shutting Down")
-        elif status == libvirt.VIR_DOMAIN_SHUTOFF:
-            if has_saved:
-                return _("Saved")
-            else:
-                return _("Shutoff")
-        elif status == libvirt.VIR_DOMAIN_CRASHED:
-            return _("Crashed")
-        elif status == libvirt.VIR_DOMAIN_PMSUSPENDED:
-            return _("Suspended")
-
-        logging.debug("Unknown status %s, returning 'Unknown'", status)
-        return _("Unknown")
-
-    @staticmethod
-    def pretty_status_reason(status, reason):
-        def key(x, y):
-            return getattr(libvirt, "VIR_DOMAIN_" + x, y)
-        reasons = {
-            libvirt.VIR_DOMAIN_RUNNING: {
-                key("RUNNING_BOOTED", 1):             _("Booted"),
-                key("RUNNING_MIGRATED", 2):           _("Migrated"),
-                key("RUNNING_RESTORED", 3):           _("Restored"),
-                key("RUNNING_FROM_SNAPSHOT", 4):      _("From snapshot"),
-                key("RUNNING_UNPAUSED", 5):           _("Unpaused"),
-                key("RUNNING_MIGRATION_CANCELED", 6): _("Migration canceled"),
-                key("RUNNING_SAVE_CANCELED", 7):      _("Save canceled"),
-                key("RUNNING_WAKEUP", 8):             _("Event wakeup"),
-                key("RUNNING_CRASHED", 9):            _("Crashed"),
-            },
-            libvirt.VIR_DOMAIN_PAUSED: {
-                key("PAUSED_USER", 1):                _("User"),
-                key("PAUSED_MIGRATION", 2):           _("Migrating"),
-                key("PAUSED_SAVE", 3):                _("Saving"),
-                key("PAUSED_DUMP", 4):                _("Dumping"),
-                key("PAUSED_IOERROR", 5):             _("I/O error"),
-                key("PAUSED_WATCHDOG", 6):            _("Watchdog"),
-                key("PAUSED_FROM_SNAPSHOT", 7):       _("From snapshot"),
-                key("PAUSED_SHUTTING_DOWN", 8):       _("Shutting down"),
-                key("PAUSED_SNAPSHOT", 9):            _("Creating snapshot"),
-                key("PAUSED_CRASHED", 10):            _("Crashed"),
-            },
-            libvirt.VIR_DOMAIN_SHUTDOWN: {
-                key("SHUTDOWN_USER", 1):              _("User"),
-            },
-            libvirt.VIR_DOMAIN_SHUTOFF: {
-                key("SHUTOFF_SHUTDOWN", 1):           _("Shut Down"),
-                key("SHUTOFF_DESTROYED", 2):          _("Destroyed"),
-                key("SHUTOFF_CRASHED", 3):            _("Crashed"),
-                key("SHUTOFF_MIGRATED", 4):           _("Migrated"),
-                key("SHUTOFF_SAVED", 5):              _("Saved"),
-                key("SHUTOFF_FAILED", 6):             _("Failed"),
-                key("SHUTOFF_FROM_SNAPSHOT", 7):      _("From snapshot"),
-            },
-            libvirt.VIR_DOMAIN_CRASHED: {
-                key("CRASHED_PANICKED", 1):           _("Panicked"),
-            }
-        }
-        return reasons.get(status) and reasons[status].get(reason)
 
     def __init__(self, conn, backend, key):
         vmmLibvirtObject.__init__(self, conn, backend, key, Guest)
@@ -351,6 +256,7 @@ class vmmDomain(vmmLibvirtObject):
         for snap in self._snapshot_list or []:
             snap.cleanup()
         self._snapshot_list = None
+        vmmLibvirtObject._cleanup(self)
 
     def _init_libvirt_state(self):
         self.managedsave_supported = self.conn.check_support(
@@ -413,7 +319,7 @@ class vmmDomain(vmmLibvirtObject):
                   "To fix this, remove and reattach the USB device "
                   "to your guest using the 'Add Hardware' wizard.")
 
-        for hostdev in self.get_hostdev_devices():
+        for hostdev in self.xmlobj.devices.hostdev:
             devtype = hostdev.type
 
             if devtype != "usb":
@@ -471,7 +377,7 @@ class vmmDomain(vmmLibvirtObject):
         return self.get_xmlobj().stable_defaults()
 
     def has_spicevmc_type_redirdev(self):
-        devs = self.get_redirdev_devices()
+        devs = self.xmlobj.devices.redirdev
         for dev in devs:
             if dev.type == "spicevmc":
                 return True
@@ -514,7 +420,7 @@ class vmmDomain(vmmLibvirtObject):
 
         # Check if our disks are all qcow2
         seen_qcow2 = False
-        for disk in self.get_disk_devices(refresh_if_nec=False):
+        for disk in self.get_disk_devices_norefresh():
             if disk.read_only:
                 continue
             if not disk.path:
@@ -568,14 +474,14 @@ class vmmDomain(vmmLibvirtObject):
         We need to do this copy magic because there is no Libvirt storage API
         to rename storage volume.
         """
-        old_nvram = VirtualDisk(self.conn.get_backend())
+        old_nvram = DeviceDisk(self.conn.get_backend())
         old_nvram.path = self.get_xmlobj().os.nvram
 
         nvram_dir = os.path.dirname(old_nvram.path)
         new_nvram_path = os.path.join(nvram_dir, "%s_VARS.fd" % new_name)
-        new_nvram = VirtualDisk(self.conn.get_backend())
+        new_nvram = DeviceDisk(self.conn.get_backend())
 
-        nvram_install = VirtualDisk.build_vol_install(
+        nvram_install = DeviceDisk.build_vol_install(
                 self.conn.get_backend(), os.path.basename(new_nvram_path),
                 old_nvram.get_parent_pool(), old_nvram.get_size(), False)
         nvram_install.input_vol = old_nvram.get_vol_object()
@@ -630,11 +536,11 @@ class vmmDomain(vmmLibvirtObject):
         """
         Remove passed device from the inactive guest XML
         """
-        # HACK: If serial and console are both present, they both need
+        # If serial and duplicate console are both present, they both need
         # to be removed at the same time
         con = None
-        if hasattr(devobj, "virtmanager_console_dup"):
-            con = getattr(devobj, "virtmanager_console_dup")
+        if self.serial_is_console_dup(devobj):
+            con = self.xmlobj.devices.consoles[0]
 
         xmlobj = self._make_xmlobj_to_define()
         editdev = self._lookup_device_to_define(xmlobj, devobj, False)
@@ -732,7 +638,7 @@ class vmmDomain(vmmLibvirtObject):
         guest = self._make_xmlobj_to_define()
         def _change_boot_order():
             boot_dev_order = []
-            devmap = dict((dev.vmmidstr, dev) for dev in
+            devmap = dict((dev.get_xml_id(), dev) for dev in
                           self.get_bootable_devices())
             for b in boot_order:
                 if b in devmap:
@@ -742,7 +648,7 @@ class vmmDomain(vmmLibvirtObject):
             guest.os.bootorder = []
 
             # Unset device boot order
-            for dev in guest.get_all_devices():
+            for dev in guest.devices.get_all():
                 dev.boot.order = None
 
             count = 1
@@ -806,8 +712,8 @@ class vmmDomain(vmmLibvirtObject):
                 return
 
             used = []
-            disks = (self.get_disk_devices() +
-                     self.get_disk_devices(inactive=True))
+            disks = (self.xmlobj.devices.disk +
+                     self.get_xmlobj(inactive=True).devices.disk)
             for d in disks:
                 used.append(d.target)
 
@@ -1012,18 +918,18 @@ class vmmDomain(vmmLibvirtObject):
 
         def _change_model():
             if editdev.type == "usb":
-                ctrls = xmlobj.get_devices("controller")
+                ctrls = xmlobj.devices.controller
                 ctrls = [x for x in ctrls if (x.type ==
-                         VirtualController.TYPE_USB)]
+                         DeviceController.TYPE_USB)]
                 for dev in ctrls:
                     xmlobj.remove_device(dev)
 
                 if model == "ich9-ehci1":
-                    for dev in VirtualController.get_usb2_controllers(
+                    for dev in DeviceController.get_usb2_controllers(
                             xmlobj.conn):
                         xmlobj.add_device(dev)
                 else:
-                    dev = VirtualController(xmlobj.conn)
+                    dev = DeviceController(xmlobj.conn)
                     dev.type = "usb"
                     dev.model = model
                     xmlobj.add_device(dev)
@@ -1215,7 +1121,7 @@ class vmmDomain(vmmLibvirtObject):
 
         # Ugly workaround for VNC bug where the display cannot be opened
         # if the listen type is "none".  This bug was fixed in QEMU-2.9.0.
-        graphics = self.get_graphics_devices()[0]
+        graphics = self.xmlobj.devices.graphics[0]
         if (graphics.type == "vnc" and
                 graphics.get_first_listen_type() == "none" and
                 not self.conn.SUPPORT_CONN_VNC_NONE_AUTH):
@@ -1319,7 +1225,7 @@ class vmmDomain(vmmLibvirtObject):
         floppy = None
         net = None
 
-        for d in self.get_disk_devices():
+        for d in self.xmlobj.devices.disk:
             if not cdrom and d.device == "cdrom":
                 cdrom = d
             if not floppy and d.device == "floppy":
@@ -1329,19 +1235,19 @@ class vmmDomain(vmmLibvirtObject):
             if cdrom and disk and floppy:
                 break
 
-        for n in self.get_network_devices():
+        for n in self.xmlobj.devices.interface:
             net = n
             break
 
         for b in boot_order:
             if b == "network" and net:
-                ret.append(net.vmmidstr)
+                ret.append(net.get_xml_id())
             if b == "hd" and disk:
-                ret.append(disk.vmmidstr)
+                ret.append(disk.get_xml_id())
             if b == "cdrom" and cdrom:
-                ret.append(cdrom.vmmidstr)
+                ret.append(cdrom.get_xml_id())
             if b == "fd" and floppy:
-                ret.append(floppy.vmmidstr)
+                ret.append(floppy.get_xml_id())
         return ret
 
     def _get_device_boot_order(self):
@@ -1350,7 +1256,7 @@ class vmmDomain(vmmLibvirtObject):
         for dev in devs:
             if not dev.boot.order:
                 continue
-            order.append((dev.vmmidstr, dev.boot.order))
+            order.append((dev.get_xml_id(), dev.boot.order))
 
         if not order:
             # No devices individually marked bootable, convert traditional
@@ -1374,97 +1280,26 @@ class vmmDomain(vmmLibvirtObject):
         return (guest.os.kernel, guest.os.initrd,
                 guest.os.dtb, guest.os.kernel_args)
 
-    # XML Device listing
+    def get_interface_devices_norefresh(self):
+        xmlobj = self.get_xmlobj(refresh_if_nec=False)
+        return xmlobj.devices.interface
+    def get_disk_devices_norefresh(self):
+        xmlobj = self.get_xmlobj(refresh_if_nec=False)
+        return xmlobj.devices.disk
 
-    def get_serial_devs(self):
-        devs = self.get_char_devices()
-        devlist = []
+    def serial_is_console_dup(self, serial):
+        if serial.DEVICE_TYPE != "serial":
+            return False
 
-        devlist += [x for x in devs if x.virtual_device_type == "serial"]
-        devlist += [x for x in devs if x.virtual_device_type == "console"]
-        return devlist
+        consoles = self.xmlobj.devices.console
+        if not consoles:
+            return False
 
-    def _build_device_list(self, device_type,
-                           refresh_if_nec=True, inactive=False):
-        guest = self.get_xmlobj(refresh_if_nec=refresh_if_nec,
-                                inactive=inactive)
-        devs = guest.get_devices(device_type)
-
-        for idx, dev in enumerate(devs):
-            dev.vmmindex = idx
-            dev.vmmidstr = dev.virtual_device_type + ("%.3d" % idx)
-
-        return devs
-
-    def get_network_devices(self, refresh_if_nec=True):
-        return self._build_device_list("interface", refresh_if_nec)
-    def get_video_devices(self):
-        return self._build_device_list("video")
-    def get_hostdev_devices(self):
-        return self._build_device_list("hostdev")
-    def get_watchdog_devices(self):
-        return self._build_device_list("watchdog")
-    def get_input_devices(self):
-        return self._build_device_list("input")
-    def get_graphics_devices(self):
-        return self._build_device_list("graphics")
-    def get_sound_devices(self):
-        return self._build_device_list("sound")
-    def get_controller_devices(self):
-        return self._build_device_list("controller")
-    def get_filesystem_devices(self):
-        return self._build_device_list("filesystem")
-    def get_smartcard_devices(self):
-        return self._build_device_list("smartcard")
-    def get_redirdev_devices(self):
-        return self._build_device_list("redirdev")
-    def get_tpm_devices(self):
-        return self._build_device_list("tpm")
-    def get_rng_devices(self):
-        return self._build_device_list("rng")
-    def get_panic_devices(self):
-        return self._build_device_list("panic")
-
-    def get_disk_devices(self, refresh_if_nec=True, inactive=False):
-        devs = self._build_device_list("disk", refresh_if_nec, inactive)
-
-        # Iterate through all disks and calculate what number they are
-        # HACK: We are making a variable in VirtualDisk to store the index
-        idx_mapping = {}
-        for dev in devs:
-            devtype = dev.device
-            bus = dev.bus
-            key = devtype + (bus or "")
-
-            if key not in idx_mapping:
-                idx_mapping[key] = 1
-
-            dev.disk_bus_index = idx_mapping[key]
-            idx_mapping[key] += 1
-
-        return devs
-
-    def get_char_devices(self):
-        devs = []
-        serials     = self._build_device_list("serial")
-        parallels   = self._build_device_list("parallel")
-        consoles    = self._build_device_list("console")
-        channels    = self._build_device_list("channel")
-
-        for devicelist in [serials, parallels, consoles, channels]:
-            devs.extend(devicelist)
-
-        # Don't display <console> if it's just a duplicate of <serial>
-        if (len(consoles) > 0 and len(serials) > 0):
-            con = consoles[0]
-            ser = serials[0]
-
-            if (con.type == ser.type and
-                con.target_type is None or con.target_type == "serial"):
-                ser.virtmanager_console_dup = con
-                devs.remove(con)
-
-        return devs
+        console = consoles[0]
+        if (console.type == serial.type and
+            (console.target_type is None or console.target_type == "serial")):
+            return True
+        return False
 
     def can_use_device_boot_order(self):
         # Return 'True' if guest can use new style boot device ordering
@@ -1472,14 +1307,15 @@ class vmmDomain(vmmLibvirtObject):
             self.conn.SUPPORT_CONN_DEVICE_BOOTORDER)
 
     def get_bootable_devices(self):
-        devs = self.get_disk_devices()
-        devs += self.get_network_devices()
-        devs += self.get_hostdev_devices()
-
         # redirdev can also be marked bootable, but it should be rarely
         # used and clutters the UI
+        devs = (self.xmlobj.devices.disk +
+                self.xmlobj.devices.interface +
+                self.xmlobj.devices.hostdev)
         return devs
 
+    def get_serialcon_devices(self):
+        return self.xmlobj.devices.serial + self.xmlobj.devices.console
 
     ############################
     # Domain lifecycle methods #
@@ -1792,17 +1628,19 @@ class vmmDomain(vmmLibvirtObject):
                                  libvirt.VIR_DOMAIN_PMSUSPENDED]
 
     def run_status(self):
-        return self.pretty_run_status(self.status(), self.has_managed_save())
+        return LibvirtEnumMap.pretty_run_status(
+                self.status(), self.has_managed_save())
 
     def run_status_reason(self):
-        return self.pretty_status_reason(self.status(), self.status_reason())
+        return LibvirtEnumMap.pretty_status_reason(
+                self.status(), self.status_reason())
 
     def run_status_icon_name(self):
         status = self.status()
-        if status not in vm_status_icons:
+        if status not in LibvirtEnumMap.VM_STATUS_ICONS:
             logging.debug("Unknown status %s, using NOSTATE", status)
             status = libvirt.VIR_DOMAIN_NOSTATE
-        return vm_status_icons[status]
+        return LibvirtEnumMap.VM_STATUS_ICONS[status]
 
     def inspection_data_updated(self):
         self.idle_emit("inspection-changed")
@@ -1879,7 +1717,7 @@ class vmmDomain(vmmLibvirtObject):
             self._stats_net_skip = []
             return rx, tx
 
-        for netdev in self.get_network_devices(refresh_if_nec=False):
+        for netdev in self.get_interface_devices_norefresh():
             dev = netdev.target_dev
             if not dev:
                 continue
@@ -1929,7 +1767,7 @@ class vmmDomain(vmmLibvirtObject):
                 self._summary_disk_stats_skip = True
 
         # did not work, iterate over all disks
-        for disk in self.get_disk_devices(refresh_if_nec=False):
+        for disk in self.get_disk_devices_norefresh():
             dev = disk.target
             if not dev:
                 continue
@@ -1966,7 +1804,7 @@ class vmmDomain(vmmLibvirtObject):
             return
 
         # Only works for virtio balloon
-        if not any([b for b in self.get_xmlobj().get_devices("memballoon") if
+        if not any([b for b in self.get_xmlobj().devices.memballoon if
                     b.model == "virtio"]):
             return
 

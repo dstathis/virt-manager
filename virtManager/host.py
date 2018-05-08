@@ -1,27 +1,12 @@
-#
 # Copyright (C) 2007, 2013-2014 Red Hat, Inc.
 # Copyright (C) 2007 Daniel P. Berrange <berrange@redhat.com>
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
-#
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import functools
 import logging
 
-from gi.repository import GObject
 from gi.repository import Gtk
 
 from virtinst import Interface
@@ -33,6 +18,7 @@ from .asyncjob import vmmAsyncJob
 from .baseclass import vmmGObjectUI
 from .createnet import vmmCreateNetwork
 from .createinterface import vmmCreateInterface
+from .engine import vmmEngine
 from .graphwidgets import Sparkline
 from .storagelist import vmmStorageList
 
@@ -51,13 +37,21 @@ EDIT_INTERFACE_STARTMODE,
 
 
 class vmmHost(vmmGObjectUI):
-    __gsignals__ = {
-        "action-exit-app": (GObject.SignalFlags.RUN_FIRST, None, []),
-        "action-view-manager": (GObject.SignalFlags.RUN_FIRST, None, []),
-        "action-restore-domain": (GObject.SignalFlags.RUN_FIRST, None, [str]),
-        "host-closed": (GObject.SignalFlags.RUN_FIRST, None, []),
-        "host-opened": (GObject.SignalFlags.RUN_FIRST, None, []),
-    }
+    @classmethod
+    def show_instance(cls, parentobj, conn):
+        try:
+            # Maintain one dialog per connection
+            uri = conn.get_uri()
+            if cls._instances is None:
+                cls._instances = {}
+            if uri not in cls._instances:
+                cls._instances[uri] = vmmHost(conn)
+            cls._instances[uri].show()
+        except Exception as e:
+            if not parentobj:
+                raise
+            parentobj.err.show_err(
+                    _("Error launching host dialog: %s") % str(e))
 
     def __init__(self, conn):
         vmmGObjectUI.__init__(self, "host.ui", "vmm-host")
@@ -87,8 +81,6 @@ class vmmHost(vmmGObjectUI):
             "on_menu_file_close_activate": self.close,
             "on_vmm_host_delete_event": self.close,
             "on_host_page_switch": self.page_changed,
-
-            "on_menu_restore_saved_activate": self.restore_domain,
 
             "on_net_add_clicked": self.add_network,
             "on_net_delete_clicked": self.delete_network,
@@ -144,6 +136,8 @@ class vmmHost(vmmGObjectUI):
         self.conn_state_changed()
         self.widget("config-autoconnect").set_active(
             self.conn.get_autoconnect())
+
+        self._cleanup_on_conn_removed()
 
 
     def init_net_state(self):
@@ -257,20 +251,20 @@ class vmmHost(vmmGObjectUI):
         if vis:
             return
 
-        self.emit("host-opened")
+        vmmEngine.get_instance().increment_window_counter()
 
     def is_visible(self):
         return self.topwin.get_visible()
 
     def close(self, ignore1=None, ignore2=None):
-        logging.debug("Closing host details: %s", self.conn)
+        logging.debug("Closing host window for %s", self.conn)
         if not self.is_visible():
             return
 
         self.confirm_changes()
 
         self.topwin.hide()
-        self.emit("host-closed")
+        vmmEngine.get_instance().decrement_window_counter()
 
         return 1
 
@@ -294,14 +288,12 @@ class vmmHost(vmmGObjectUI):
         self.memory_usage_graph.destroy()
         self.memory_usage_graph = None
 
-    def view_manager(self, src_ignore):
-        self.emit("action-view-manager")
+    def view_manager(self, _src):
+        from .manager import vmmManager
+        vmmManager.get_instance(self).show()
 
-    def restore_domain(self, src_ignore):
-        self.emit("action-restore-domain", self.conn.get_uri())
-
-    def exit_app(self, src_ignore):
-        self.emit("action-exit-app")
+    def exit_app(self, _src):
+        vmmEngine.get_instance().exit_app()
 
 
     def page_changed(self, src, child, pagenum):
@@ -731,10 +723,7 @@ class vmmHost(vmmGObjectUI):
             net_list.get_selection().unselect_all()
             model.clear()
             for net in self.conn.list_nets():
-                try:
-                    net.disconnect_by_func(self.refresh_network)
-                except Exception:
-                    pass
+                net.disconnect_by_obj(self)
                 net.connect("state-changed", self.refresh_network)
                 model.append([net.get_connkey(), net.get_name(), "network-idle",
                               Gtk.IconSize.LARGE_TOOLBAR,
@@ -981,10 +970,7 @@ class vmmHost(vmmGObjectUI):
             model.clear()
             iface_list.get_selection().unselect_all()
             for iface in self.conn.list_interfaces():
-                try:
-                    iface.disconnect_by_func(self.refresh_interface)
-                except Exception:
-                    pass
+                iface.disconnect_by_obj(self)
                 iface.connect("state-changed", self.refresh_interface)
                 model.append([iface.get_connkey(), iface.get_name(),
                               "network-idle", Gtk.IconSize.LARGE_TOOLBAR,

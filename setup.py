@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-# Copyright (C) 2013, 2014 Red Hat, Inc.
+#
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
+
 
 import glob
 import fnmatch
@@ -17,14 +20,14 @@ import distutils.dist
 import distutils.log
 import distutils.sysconfig
 
+if sys.version_info.major < 3:
+    print("virt-manager is python3 only. Run this as ./setup.py")
+    sys.exit(1)
+
 from virtcli import CLIConfig
 
 sysprefix = distutils.sysconfig.get_config_var("prefix")
 
-
-if sys.version_info.major < 3:
-    print("virt-manager is python3 only. Run this as ./setup.py")
-    sys.exit(1)
 
 # pylint: disable=attribute-defined-outside-init
 
@@ -581,6 +584,9 @@ class CheckPylint(distutils.core.Command):
             self.jobs = int(self.jobs)
 
     def run(self):
+        import pylint.lint
+        import pycodestyle
+
         files = ["setup.py", "virt-install", "virt-clone",
                  "virt-convert", "virt-xml", "virt-manager",
                  "virtcli", "virtinst", "virtconv", "virtManager",
@@ -590,22 +596,26 @@ class CheckPylint(distutils.core.Command):
         exclude = ["virtinst/progress.py"]
 
         print("running pycodestyle")
-        cmd = "pycodestyle-3 "
-        cmd += "--config tests/pycodestyle.cfg "
-        cmd += "--exclude %s " % ",".join(exclude)
-        cmd += " ".join(files)
-        os.system(cmd)
+        style_guide = pycodestyle.StyleGuide(
+            config_file='tests/pycodestyle.cfg',
+            paths=files
+        )
+        style_guide.options.exclude = pycodestyle.normalize_paths(
+            ','.join(exclude)
+        )
+        report = style_guide.check_files()
+        if style_guide.options.count:
+            sys.stderr.write(str(report.total_errors) + '\n')
 
         print("running pylint")
-        cmd = "pylint-3 "
+        pylint_opts = [
+            "--rcfile", "tests/pylint.cfg",
+            "--output-format=%s" % output_format,
+        ] + ["--ignore"] + [os.path.basename(p) for p in exclude]
         if self.jobs:
-            cmd += "--jobs=%d " % self.jobs
-        cmd += "--rcfile tests/pylint.cfg "
-        cmd += "--output-format=%s " % output_format
-        cmd += "--ignore %s " % ",".join(
-            [os.path.basename(p) for p in exclude])
-        cmd += " ".join(files)
-        os.system(cmd)
+            pylint_opts += ["--jobs=%d" % self.jobs]
+
+        pylint.lint.Run(files + pylint_opts)
 
 
 class VMMDistribution(distutils.dist.Distribution):
@@ -646,8 +656,6 @@ distutils.core.setup(
         ]),
         ("share/glib-2.0/schemas",
          ["data/org.virt-manager.virt-manager.gschema.xml"]),
-        ("share/GConf/gsettings",
-         ["data/org.virt-manager.virt-manager.convert"]),
         ("share/virt-manager/ui", glob.glob("ui/*.ui")),
 
         ("share/man/man1", [
@@ -663,6 +671,8 @@ distutils.core.setup(
         ("share/virt-manager/virtcli",
          glob.glob("virtcli/*.py") + glob.glob("virtcli/cli.cfg")),
         ("share/virt-manager/virtinst", glob.glob("virtinst/*.py")),
+        ("share/virt-manager/virtinst/devices", glob.glob("virtinst/devices/*.py")),
+        ("share/virt-manager/virtinst/domain", glob.glob("virtinst/domain/*.py")),
         ("share/virt-manager/virtconv", glob.glob("virtconv/*.py")),
     ],
 

@@ -1,19 +1,7 @@
 # Copyright (C) 2013, 2014 Red Hat, Inc.
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import atexit
 from distutils.spawn import find_executable
@@ -40,7 +28,7 @@ os.environ["DISPLAY"] = ":3.4"
 # Location
 image_prefix = "/tmp/__virtinst_cli_"
 xmldir = "tests/cli-test-xml"
-treedir = "%s/faketree" % xmldir
+treedir = "%s/fakefedoratree" % xmldir
 fakeiso = "%s/fakefedora.iso" % xmldir
 vcdir = "%s/virtconv" % xmldir
 compare_xmldir = "%s/compare" % xmldir
@@ -194,7 +182,7 @@ class Command(object):
 
             code, output = self._launch_command(conn)
 
-            logging.debug(output + "\n")
+            logging.debug("%s\n", output)
             return code, output
         except Exception as e:
             return (-1, "".join(traceback.format_exc()) + str(e))
@@ -398,7 +386,7 @@ c.add_compare(""" \
 --vcpus 4 --cpuset=1,3-5 \
 --cpu host \
 --description \"foobar & baz\" \
---boot uefi \
+--boot uefi,smbios_mode=emulate \
 --security type=dynamic \
 --security type=none,model=dac \
 --numatune 1,2,3,5-7,^6 \
@@ -438,7 +426,7 @@ cell1.distances.sibling1.id=1,cell1.distances.sibling1.value=10,\
 cache.mode=emulate,cache.level=3 \
 --cputune vcpupin0.vcpu=0,vcpupin0.cpuset=0-3 \
 --metadata title=my-title,description=my-description,uuid=00000000-1111-2222-3333-444444444444 \
---boot cdrom,fd,hd,network,menu=off,loader=/foo/bar \
+--boot cdrom,fd,hd,network,menu=off,loader=/foo/bar,emulator=/new/emu \
 --idmap uid_start=0,uid_target=1000,uid_count=10,gid_start=0,gid_target=1000,gid_count=10 \
 --security type=static,label='system_u:object_r:svirt_image_t:s0:c100,c200',relabel=yes \
 --numatune 1-3,4,mode=strict \
@@ -880,6 +868,7 @@ vixml = App("virt-xml", compare_check="1.2.2")  # compare_check for  input type=
 c = vixml.add_category("misc", "")
 c.add_valid("--help")  # basic --help test
 c.add_valid("--sound=? --tpm=?")  # basic introspection test
+c.add_valid("test-state-shutoff --edit --update --boot menu=on")  # --update with inactive VM, should work but warn
 c.add_invalid("test --edit --hostdev driver_name=vfio")  # Guest has no hostdev to edit
 c.add_invalid("test --edit --cpu host-passthrough --boot hd,network")  # Specified more than 1 option
 c.add_invalid("test --edit")  # specified no edit option

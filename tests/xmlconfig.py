@@ -1,25 +1,14 @@
 # Copyright (C) 2013, 2014 Red Hat, Inc.
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
-import unittest
 import os
+import tempfile
+import unittest
 
 import virtinst
-from virtinst import VirtualDisk
+from virtinst import DeviceDisk
 from virtcli import CLIConfig
 
 from tests import utils
@@ -40,7 +29,7 @@ def _make_guest(installer=None, conn=None, os_variant=None):
     g.memory = int(200 * 1024)
     g.maxmemory = int(400 * 1024)
     g.uuid = "12345678-1234-1234-1234-123456789012"
-    gdev = virtinst.VirtualGraphics(conn)
+    gdev = virtinst.DeviceGraphics(conn)
     gdev.type = "vnc"
     gdev.keymap = "ja"
     g.add_device(gdev)
@@ -56,11 +45,11 @@ def _make_guest(installer=None, conn=None, os_variant=None):
         g.os_variant = os_variant
     g.add_default_input_device()
     g.add_default_console_device()
-    g.add_device(virtinst.VirtualAudio(g.conn))
+    g.add_device(virtinst.DeviceSound(g.conn))
 
     # Floppy disk
     path = "/dev/default-pool/testvol1.img"
-    d = VirtualDisk(conn)
+    d = DeviceDisk(conn)
     d.path = path
     d.device = d.DEVICE_FLOPPY
     d.validate()
@@ -68,12 +57,12 @@ def _make_guest(installer=None, conn=None, os_variant=None):
 
     # File disk
     path = "/dev/default-pool/new-test-suite.img"
-    d = virtinst.VirtualDisk(conn)
+    d = virtinst.DeviceDisk(conn)
     d.path = path
 
     if d.wants_storage_creation():
         parent_pool = d.get_parent_pool()
-        vol_install = virtinst.VirtualDisk.build_vol_install(conn,
+        vol_install = virtinst.DeviceDisk.build_vol_install(conn,
             os.path.basename(path), parent_pool, .0000001, True)
         d.set_vol_install(vol_install)
 
@@ -82,15 +71,15 @@ def _make_guest(installer=None, conn=None, os_variant=None):
 
     # Block disk
     path = "/dev/disk-pool/diskvol1"
-    d = virtinst.VirtualDisk(conn)
+    d = virtinst.DeviceDisk(conn)
     d.path = path
     d.validate()
     g.add_device(d)
 
     # Network device
-    dev = virtinst.VirtualNetworkInterface(conn)
+    dev = virtinst.DeviceInterface(conn)
     dev.macaddr = "22:22:33:44:55:66"
-    dev.type = virtinst.VirtualNetworkInterface.TYPE_VIRTUAL
+    dev.type = virtinst.DeviceInterface.TYPE_VIRTUAL
     dev.source = "default"
     g.add_device(dev)
 
@@ -132,23 +121,23 @@ class TestXMLMisc(unittest.TestCase):
 
     def testDefaultBridge(self):
         # Test our handling of the default bridge routines
-        from virtinst import deviceinterface
+        from virtinst.devices import interface as deviceinterface
         origfunc = getattr(deviceinterface, "_default_bridge")
         try:
             def newbridge(ignore_conn):
                 return "bzz0"
             setattr(deviceinterface, "_default_bridge", newbridge)
 
-            dev1 = virtinst.VirtualNetworkInterface(self.conn)
+            dev1 = virtinst.DeviceInterface(self.conn)
             dev1.macaddr = "22:22:33:44:55:66"
 
-            dev2 = virtinst.VirtualNetworkInterface(self.conn,
+            dev2 = virtinst.DeviceInterface(self.conn,
                                     parsexml=dev1.get_xml_config())
             dev2.source = None
             dev2.source = "foobr0"
             dev2.macaddr = "22:22:33:44:55:67"
 
-            dev3 = virtinst.VirtualNetworkInterface(self.conn,
+            dev3 = virtinst.DeviceInterface(self.conn,
                                     parsexml=dev1.get_xml_config())
             dev3.source = None
             dev3.macaddr = "22:22:33:44:55:68"
@@ -191,29 +180,29 @@ class TestXMLMisc(unittest.TestCase):
 
     def testDiskNumbers(self):
         # Various testing our target generation
-        self.assertEqual("a", VirtualDisk.num_to_target(1))
-        self.assertEqual("b", VirtualDisk.num_to_target(2))
-        self.assertEqual("z", VirtualDisk.num_to_target(26))
-        self.assertEqual("aa", VirtualDisk.num_to_target(27))
-        self.assertEqual("ab", VirtualDisk.num_to_target(28))
-        self.assertEqual("az", VirtualDisk.num_to_target(52))
-        self.assertEqual("ba", VirtualDisk.num_to_target(53))
-        self.assertEqual("zz", VirtualDisk.num_to_target(27 * 26))
-        self.assertEqual("aaa", VirtualDisk.num_to_target(27 * 26 + 1))
+        self.assertEqual("a", DeviceDisk.num_to_target(1))
+        self.assertEqual("b", DeviceDisk.num_to_target(2))
+        self.assertEqual("z", DeviceDisk.num_to_target(26))
+        self.assertEqual("aa", DeviceDisk.num_to_target(27))
+        self.assertEqual("ab", DeviceDisk.num_to_target(28))
+        self.assertEqual("az", DeviceDisk.num_to_target(52))
+        self.assertEqual("ba", DeviceDisk.num_to_target(53))
+        self.assertEqual("zz", DeviceDisk.num_to_target(27 * 26))
+        self.assertEqual("aaa", DeviceDisk.num_to_target(27 * 26 + 1))
 
-        self.assertEqual(VirtualDisk.target_to_num("hda"), 0)
-        self.assertEqual(VirtualDisk.target_to_num("hdb"), 1)
-        self.assertEqual(VirtualDisk.target_to_num("sdz"), 25)
-        self.assertEqual(VirtualDisk.target_to_num("sdaa"), 26)
-        self.assertEqual(VirtualDisk.target_to_num("vdab"), 27)
-        self.assertEqual(VirtualDisk.target_to_num("vdaz"), 51)
-        self.assertEqual(VirtualDisk.target_to_num("xvdba"), 52)
-        self.assertEqual(VirtualDisk.target_to_num("xvdzz"),
+        self.assertEqual(DeviceDisk.target_to_num("hda"), 0)
+        self.assertEqual(DeviceDisk.target_to_num("hdb"), 1)
+        self.assertEqual(DeviceDisk.target_to_num("sdz"), 25)
+        self.assertEqual(DeviceDisk.target_to_num("sdaa"), 26)
+        self.assertEqual(DeviceDisk.target_to_num("vdab"), 27)
+        self.assertEqual(DeviceDisk.target_to_num("vdaz"), 51)
+        self.assertEqual(DeviceDisk.target_to_num("xvdba"), 52)
+        self.assertEqual(DeviceDisk.target_to_num("xvdzz"),
             26 * (25 + 1) + 25)
-        self.assertEqual(VirtualDisk.target_to_num("xvdaaa"),
+        self.assertEqual(DeviceDisk.target_to_num("xvdaaa"),
             26 * 26 * 1 + 26 * 1 + 0)
 
-        disk = virtinst.VirtualDisk(self.conn)
+        disk = virtinst.DeviceDisk(self.conn)
         disk.bus = "ide"
 
         self.assertEqual("hda", disk.generate_target([]))
@@ -243,27 +232,27 @@ class TestXMLMisc(unittest.TestCase):
 
     def testCPUTopology(self):
         # Test CPU topology determining
-        cpu = virtinst.CPU(self.conn)
+        cpu = virtinst.DomainCpu(self.conn)
         cpu.sockets = "2"
         cpu.set_topology_defaults(6)
         self.assertEqual([cpu.sockets, cpu.cores, cpu.threads], [2, 3, 1])
 
-        cpu = virtinst.CPU(self.conn)
+        cpu = virtinst.DomainCpu(self.conn)
         cpu.cores = "4"
         cpu.set_topology_defaults(9)
         self.assertEqual([cpu.sockets, cpu.cores, cpu.threads], [2, 4, 1])
 
-        cpu = virtinst.CPU(self.conn)
+        cpu = virtinst.DomainCpu(self.conn)
         cpu.threads = "3"
         cpu.set_topology_defaults(14)
         self.assertEqual([cpu.sockets, cpu.cores, cpu.threads], [4, 1, 3])
 
-        cpu = virtinst.CPU(self.conn)
+        cpu = virtinst.DomainCpu(self.conn)
         cpu.sockets = 5
         cpu.cores = 2
         self.assertEqual(cpu.vcpus_from_topology(), 10)
 
-        cpu = virtinst.CPU(self.conn)
+        cpu = virtinst.DomainCpu(self.conn)
         self.assertEqual(cpu.vcpus_from_topology(), 1)
 
     def testAC97(self):
@@ -329,3 +318,16 @@ class TestXMLMisc(unittest.TestCase):
             self._compare(g, "install-hyperv-noclock", True)
         finally:
             CLIConfig.stable_defaults = False
+
+    def test_dir_searchable(self):
+        # Normally the dir searchable test is skipped in the unittest,
+        # but let's contrive an example that should trigger all the code
+        from virtinst.devices.disk import _is_dir_searchable
+        oldtest = os.environ.pop("VIRTINST_TEST_SUITE")
+        try:
+            uid = -1
+            username = "fakeuser-zzzz"
+            with tempfile.TemporaryDirectory() as tmpdir:
+                self.assertFalse(_is_dir_searchable(uid, username, tmpdir))
+        finally:
+            os.environ["VIRTINST_TEST_SUITE"] = oldtest

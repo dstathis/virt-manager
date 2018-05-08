@@ -1,20 +1,8 @@
 #
 # Copyright 2013, 2014, 2015 Red Hat, Inc.
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import logging
 import weakref
@@ -33,7 +21,7 @@ from .storage import StoragePool, StorageVolume
 from .uri import URI, MagicURI
 
 
-class VirtualConnection(object):
+class VirtinstConnection(object):
     """
     Wrapper for libvirt connection that provides various bits like
     - caching static data
@@ -118,9 +106,13 @@ class VirtualConnection(object):
         return not bool(self._libvirtconn)
 
     def close(self):
+        ret = 0
+        if self._libvirtconn:
+            ret = self._libvirtconn.close()
         self._libvirtconn = None
         self._uri = None
         self._fetch_cache = {}
+        return ret
 
     def fake_conn_predictable(self):
         return self._fake_conn_predictable
@@ -131,17 +123,21 @@ class VirtualConnection(object):
     def is_open(self):
         return bool(self._libvirtconn)
 
-    def open(self, passwordcb):
+    def open(self, authcb, cbdata):
+        # Mirror the set of libvirt.c virConnectCredTypeDefault
+        valid_auth_options = [
+            libvirt.VIR_CRED_AUTHNAME,
+            libvirt.VIR_CRED_ECHOPROMPT,
+            libvirt.VIR_CRED_REALM,
+            libvirt.VIR_CRED_PASSPHRASE,
+            libvirt.VIR_CRED_NOECHOPROMPT,
+            libvirt.VIR_CRED_EXTERNAL,
+        ]
         open_flags = 0
-        valid_auth_options = [libvirt.VIR_CRED_AUTHNAME,
-                              libvirt.VIR_CRED_PASSPHRASE]
-        authcb = self._auth_cb
-        authcb_data = passwordcb
 
         conn = libvirt.openAuth(self._open_uri,
-                    [valid_auth_options, authcb,
-                    (authcb_data, valid_auth_options)],
-                    open_flags)
+                [valid_auth_options, authcb, cbdata],
+                open_flags)
 
         if self._magic_uri:
             self._magic_uri.overwrite_conn_functions(conn)
@@ -428,16 +424,3 @@ class VirtualConnection(object):
             return False
         return (self.check_support(self.SUPPORT_CONN_STREAM) and
                 self.check_support(self.SUPPORT_STREAM_UPLOAD))
-
-
-    ###################
-    # Private helpers #
-    ###################
-
-    def _auth_cb(self, creds, data):
-        passwordcb, passwordcreds = data
-        for cred in creds:
-            if cred[0] not in passwordcreds:
-                raise RuntimeError("Unknown cred type '%s', expected only "
-                                   "%s" % (cred[0], passwordcreds))
-        return passwordcb(creds)

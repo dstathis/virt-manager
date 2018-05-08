@@ -4,20 +4,8 @@
 # Copyright 2009, 2013, 2014 Red Hat, Inc.
 # Cole Robinson <crobinso@redhat.com>
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import libvirt
 
@@ -181,7 +169,7 @@ class _SupportCheck(object):
             return ret
 
         # Do this after the function check, since there's an ordering issue
-        # with VirtualConnection
+        # with VirtinstConnection
         hv_type = conn.get_uri_driver()
         actual_libvirt_version = conn.daemon_version()
         actual_hv_version = conn.conn_version()
@@ -229,7 +217,6 @@ SUPPORT_CONN_NODEDEV = _make(
     function="virConnect.listDevices", run_args=(None, 0))
 SUPPORT_CONN_FINDPOOLSOURCES = _make(
     function="virConnect.findStoragePoolSources")
-SUPPORT_CONN_KEYMAP_AUTODETECT = _make(hv_version={"qemu": "0.11.0"})
 SUPPORT_CONN_GETHOSTNAME = _make(
     function="virConnect.getHostname", run_args=())
 SUPPORT_CONN_NETWORK = _make(function="virConnect.listNetworks", run_args=())
@@ -429,7 +416,7 @@ def check_support(virtconn, feature, data=None):
 
     :returns: True if feature is supported, False otherwise
     """
-    if "VirtualConnection" in repr(data):
+    if "VirtinstConnection" in repr(data):
         data = data.get_conn_for_api_arg()
 
     sobj = _support_objs[feature - 1]

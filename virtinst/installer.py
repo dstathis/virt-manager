@@ -4,26 +4,14 @@
 # Copyright 2006-2009, 2013 Red Hat, Inc.
 # Jeremy Katz <katzj@redhat.com>
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import os
 import logging
 
-from .devicedisk import VirtualDisk
-from .osxml import OSXML
+from .devices import DeviceDisk
+from .domain import DomainOs
 
 
 class Installer(object):
@@ -91,7 +79,7 @@ class Installer(object):
         # If guest has an attached disk, always have 'hd' in the boot
         # list, so disks are marked as bootable/installable (needed for
         # windows virtio installs, and booting local disk from PXE)
-        for disk in guest.get_devices("disk"):
+        for disk in guest.devices.disk:
             if disk.device == disk.DEVICE_DISK:
                 bootdev = "hd"
                 if bootdev not in bootorder:
@@ -114,7 +102,7 @@ class Installer(object):
         bootorder = guest.os.bootorder
         if isinstall or not bootorder:
             # Per device <boot order> is not compatible with os/boot.
-            if not any(d.boot.order for d in guest.get_all_devices()):
+            if not any(d.boot.order for d in guest.devices.get_all()):
                 bootorder = self._build_boot_order(isinstall, guest)
 
         guest.os.bootorder = bootorder
@@ -182,7 +170,7 @@ class Installer(object):
         Remove any temporary files retrieved during installation
         """
         for f in self._tmpfiles:
-            logging.debug("Removing " + f)
+            logging.debug("Removing %s", str(f))
             os.unlink(f)
 
         for vol in self._tmpvols:
@@ -226,18 +214,18 @@ class ContainerInstaller(Installer):
     def _get_bootdev(self, isinstall, guest):
         ignore = isinstall
         ignore = guest
-        return OSXML.BOOT_DEVICE_HARDDISK
+        return DomainOs.BOOT_DEVICE_HARDDISK
 
 
 class PXEInstaller(Installer):
     def _get_bootdev(self, isinstall, guest):
-        bootdev = OSXML.BOOT_DEVICE_NETWORK
+        bootdev = DomainOs.BOOT_DEVICE_NETWORK
 
         if (not isinstall and
-            [d for d in guest.get_devices("disk") if
+            [d for d in guest.devices.disk if
              d.device == d.DEVICE_DISK]):
             # If doing post-install boot and guest has an HD attached
-            bootdev = OSXML.BOOT_DEVICE_HARDDISK
+            bootdev = DomainOs.BOOT_DEVICE_HARDDISK
 
         return bootdev
 
@@ -247,17 +235,17 @@ class ImportInstaller(Installer):
 
     # Private methods
     def _get_bootdev(self, isinstall, guest):
-        disks = guest.get_devices("disk")
+        disks = guest.devices.disk
         if not disks:
-            return OSXML.BOOT_DEVICE_HARDDISK
+            return DomainOs.BOOT_DEVICE_HARDDISK
         return self._disk_to_bootdev(disks[0])
 
     def _disk_to_bootdev(self, disk):
-        if disk.device == VirtualDisk.DEVICE_DISK:
-            return OSXML.BOOT_DEVICE_HARDDISK
-        elif disk.device == VirtualDisk.DEVICE_CDROM:
-            return OSXML.BOOT_DEVICE_CDROM
-        elif disk.device == VirtualDisk.DEVICE_FLOPPY:
-            return OSXML.BOOT_DEVICE_FLOPPY
+        if disk.device == DeviceDisk.DEVICE_DISK:
+            return DomainOs.BOOT_DEVICE_HARDDISK
+        elif disk.device == DeviceDisk.DEVICE_CDROM:
+            return DomainOs.BOOT_DEVICE_CDROM
+        elif disk.device == DeviceDisk.DEVICE_FLOPPY:
+            return DomainOs.BOOT_DEVICE_FLOPPY
         else:
-            return OSXML.BOOT_DEVICE_HARDDISK
+            return DomainOs.BOOT_DEVICE_HARDDISK

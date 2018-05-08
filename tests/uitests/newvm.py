@@ -1,3 +1,6 @@
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
+
 import time
 
 import tests
@@ -25,6 +28,8 @@ class NewVM(uiutils.UITestCase):
         newvm.find_fuzzy(None,
             "text", "existing storage").text = "/dev/default-pool/testvol1.img"
         newvm.find_fuzzy("Forward", "button").click()
+        newvm.find("oslist-entry").text = "generic"
+        newvm.find("oslist-popover").find_fuzzy("generic").click()
         newvm.find_fuzzy("Forward", "button").click()
         newvm.find_fuzzy("Forward", "button").click()
         newvm.find_fuzzy("Finish", "button").click()
@@ -44,6 +49,8 @@ class NewVM(uiutils.UITestCase):
         # Create default PXE VM
         newvm.find_fuzzy("PXE", "radio").click()
         newvm.find_fuzzy("Forward", "button").click()
+        newvm.find("oslist-entry").text = "generic"
+        newvm.find("oslist-popover").find_fuzzy("generic").click()
         newvm.find_fuzzy("Forward", "button").click()
         newvm.find_fuzzy("Forward", "button").click()
         newvm.find_fuzzy("Forward", "button").click()
@@ -81,23 +88,16 @@ class NewVM(uiutils.UITestCase):
         browser.find_fuzzy("iso-vol", "table cell").click()
         browser.find_fuzzy("Choose Volume", "button").click()
 
-        label = newvm.find_fuzzy("os-version-label", "label")
+        label = newvm.find("oslist-entry")
         uiutils.check_in_loop(lambda: browser.showing is False)
-        uiutils.check_in_loop(lambda: label.text == "Unknown")
+        uiutils.check_in_loop(lambda: label.text == "None detected")
 
         # Change distro to win8
         newvm.find_fuzzy("Automatically detect", "check").click()
-        version = newvm.find_fuzzy("install-os-version-entry", "text")
-        self.assertEqual(version.text, "Generic")
-
-        ostype = newvm.find_fuzzy("install-os-type", "combo")
-        ostype.click()
-        ostype.find_fuzzy("Show all", "menu item").click()
-        newvm.find_fuzzy("install-os-type", "combo").click()
-        newvm.find_fuzzy("Windows", "menu item").click()
-        newvm.find_fuzzy("install-os-version-entry",
-            "text").typeText("Microsoft Windows 8")
-        newvm.find_fuzzy("install-os-version-entry", "text").click()
+        label.text = "windows 8"
+        popover = newvm.find("oslist-popover")
+        popover.find_fuzzy("Include end of life").click()
+        popover.find_fuzzy("\(win8\)").click()
         newvm.find_fuzzy("Forward", "button").click()
 
         # Verify that CPU values are non-default
@@ -143,12 +143,11 @@ class NewVM(uiutils.UITestCase):
         newvm.find_fuzzy("Forward", "button").click()
 
         newvm.find("URL", "text").text = (
-            "http://vault.centos.org/5.5/os/x86_64/")
+            "https://archives.fedoraproject.org/pub/archive/fedora/linux/releases/14/Fedora/x86_64/os/")
 
-        version = newvm.find("install-os-version-label")
-        uiutils.check_in_loop(lambda: "Detecting" in version.text)
+        version = newvm.find("oslist-entry")
         uiutils.check_in_loop(
-            lambda: version.text == "Red Hat Enterprise Linux 5.5",
+            lambda: version.text == "Fedora 14",
             timeout=10)
 
         newvm.find_fuzzy("Forward", "button").click()
@@ -160,7 +159,7 @@ class NewVM(uiutils.UITestCase):
             "Creating Virtual Machine", "frame")
         uiutils.check_in_loop(lambda: not progress.showing, timeout=120)
 
-        self.app.root.find_fuzzy("rhel5.5 on", "frame")
+        self.app.root.find_fuzzy("fedora14 on", "frame")
         self.assertFalse(newvm.showing)
 
 
@@ -215,6 +214,8 @@ class NewVM(uiutils.UITestCase):
             "text", "DTB").text = "/tmp/dtb"
         newvm.find_fuzzy(None,
             "text", "Kernel args").text = "console=ttyS0"
+        newvm.find("oslist-entry").text = "generic"
+        newvm.find("oslist-popover").find_fuzzy("generic").click()
         newvm.find_fuzzy("Forward", "button").click()
 
         # Disk collision box pops up, hit ok

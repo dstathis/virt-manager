@@ -3,20 +3,8 @@
 #
 # Copyright 2013 Red Hat, Inc.
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import logging
 import os
@@ -240,7 +228,7 @@ def _get_dev_type(path, vol_xml, vol_object, pool_xml, remote):
 
 class _StorageBase(object):
     """
-    Storage base class, defining the API used by VirtualDisk
+    Storage base class, defining the API used by DeviceDisk
     """
     def __init__(self, conn):
         self._conn = conn
@@ -491,7 +479,7 @@ class ManagedStorageCreator(_StorageCreator):
     """
     Handles storage creation via libvirt APIs. All the actual creation
     logic lives in StorageVolume, this is mostly about pulling out bits
-    from that class and mapping them to VirtualDisk elements
+    from that class and mapping them to DeviceDisk elements
     """
     def __init__(self, conn, vol_install):
         _StorageCreator.__init__(self, conn)

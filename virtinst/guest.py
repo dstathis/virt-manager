@@ -4,20 +4,8 @@
 # Copyright 2006-2009, 2013, 2014, 2015 Red Hat, Inc.
 # Jeremy Katz <katzj@redhat.com>
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import logging
 import os
@@ -28,36 +16,54 @@ from virtcli import CLIConfig
 
 from . import util
 from . import support
-from .osdict import OSDB
-from .clock import Clock
-from .cpu import CPU
-from .cputune import CPUTune
-from .device import VirtualDevice
-from .deviceaudio import VirtualAudio
-from .devicechar import VirtualChannelDevice, VirtualConsoleDevice
-from .devicecontroller import VirtualController
-from .devicedisk import VirtualDisk
-from .devicegraphics import VirtualGraphics
-from .deviceinput import VirtualInputDevice
-from .devicepanic import VirtualPanicDevice
-from .deviceredirdev import VirtualRedirDevice
-from .devicerng import VirtualRNGDevice
-from .devicevideo import VirtualVideoDevice
+from .devices import *  # pylint: disable=wildcard-import
 from .distroinstaller import DistroInstaller
-from .domainblkiotune import DomainBlkiotune
-from .domainfeatures import DomainFeatures
-from .domainmemorybacking import DomainMemorybacking
-from .domainmemorytune import DomainMemorytune
-from .domainnumatune import DomainNumatune
-from .domainresource import DomainResource
+from .domain import *  # pylint: disable=wildcard-import
 from .domcapabilities import DomainCapabilities
-from .idmap import IdMap
-from .osxml import OSXML
-from .pm import PM
-from .seclabel import Seclabel
-from .sysinfo import SYSInfo
+from .osdict import OSDB
 from .xmlbuilder import XMLBuilder, XMLProperty, XMLChildProperty
-from .xmlnsqemu import XMLNSQemu
+
+_ignore = Device
+
+
+class _DomainDevices(XMLBuilder):
+    XML_NAME = "devices"
+    _XML_PROP_ORDER = ['disk', 'controller', 'filesystem', 'interface',
+            'smartcard', 'serial', 'parallel', 'console', 'channel',
+            'input', 'tpm', 'graphics', 'sound', 'video', 'hostdev',
+            'redirdev', 'watchdog', 'memballoon', 'rng', 'panic',
+            'memory']
+
+
+    disk = XMLChildProperty(DeviceDisk)
+    controller = XMLChildProperty(DeviceController)
+    filesystem = XMLChildProperty(DeviceFilesystem)
+    interface = XMLChildProperty(DeviceInterface)
+    smartcard = XMLChildProperty(DeviceSmartcard)
+    serial = XMLChildProperty(DeviceSerial)
+    parallel = XMLChildProperty(DeviceParallel)
+    console = XMLChildProperty(DeviceConsole)
+    channel = XMLChildProperty(DeviceChannel)
+    input = XMLChildProperty(DeviceInput)
+    tpm = XMLChildProperty(DeviceTpm)
+    graphics = XMLChildProperty(DeviceGraphics)
+    sound = XMLChildProperty(DeviceSound)
+    video = XMLChildProperty(DeviceVideo)
+    hostdev = XMLChildProperty(DeviceHostdev)
+    redirdev = XMLChildProperty(DeviceRedirdev)
+    watchdog = XMLChildProperty(DeviceWatchdog)
+    memballoon = XMLChildProperty(DeviceMemballoon)
+    rng = XMLChildProperty(DeviceRng)
+    panic = XMLChildProperty(DevicePanic)
+    memory = XMLChildProperty(DeviceMemory)
+
+    def get_all(self):
+        retlist = []
+        # pylint: disable=protected-access
+        devtypes = _DomainDevices._XML_PROP_ORDER
+        for devtype in devtypes:
+            retlist.extend(getattr(self, devtype))
+        return retlist
 
 
 class Guest(XMLBuilder):
@@ -105,13 +111,15 @@ class Guest(XMLBuilder):
         raise ValueError(_("Guest name '%s' is already in use.") % name)
 
 
-    _XML_ROOT_NAME = "domain"
+    XML_NAME = "domain"
     _XML_PROP_ORDER = ["type", "name", "uuid", "title", "description",
-        "hotplugmemorymax", "hotplugmemoryslots", "maxmemory", "memory", "blkiotune",
-        "memtune", "memoryBacking", "vcpus", "curvcpus", "vcpu_placement",
-        "cpuset", "numatune", "resource", "sysinfo", "bootloader", "os", "idmap",
-        "features", "cpu", "clock", "on_poweroff", "on_reboot", "on_crash",
-        "pm", "emulator", "_devices", "seclabels"]
+        "hotplugmemorymax", "hotplugmemoryslots", "maxmemory", "memory",
+        "blkiotune", "memtune", "memoryBacking",
+        "vcpus", "curvcpus", "vcpu_placement",
+        "cpuset", "numatune", "resource", "sysinfo",
+        "bootloader", "os", "idmap", "features", "cpu", "clock",
+        "on_poweroff", "on_reboot", "on_crash",
+        "pm", "emulator", "devices", "seclabels"]
 
     def __init__(self, *args, **kwargs):
         XMLBuilder.__init__(self, *args, **kwargs)
@@ -206,22 +214,22 @@ class Guest(XMLBuilder):
     on_crash = XMLProperty("./on_crash")
     on_lockfailure = XMLProperty("./on_lockfailure")
 
-    seclabels = XMLChildProperty(Seclabel)
-    os = XMLChildProperty(OSXML, is_single=True)
+    seclabels = XMLChildProperty(DomainSeclabel)
+    os = XMLChildProperty(DomainOs, is_single=True)
     features = XMLChildProperty(DomainFeatures, is_single=True)
-    clock = XMLChildProperty(Clock, is_single=True)
-    cpu = XMLChildProperty(CPU, is_single=True)
-    cputune = XMLChildProperty(CPUTune, is_single=True)
+    clock = XMLChildProperty(DomainClock, is_single=True)
+    cpu = XMLChildProperty(DomainCpu, is_single=True)
+    cputune = XMLChildProperty(DomainCputune, is_single=True)
     numatune = XMLChildProperty(DomainNumatune, is_single=True)
-    pm = XMLChildProperty(PM, is_single=True)
+    pm = XMLChildProperty(DomainPm, is_single=True)
     blkiotune = XMLChildProperty(DomainBlkiotune, is_single=True)
-    memtune = XMLChildProperty(DomainMemorytune, is_single=True)
-    memoryBacking = XMLChildProperty(DomainMemorybacking, is_single=True)
-    idmap = XMLChildProperty(IdMap, is_single=True)
+    memtune = XMLChildProperty(DomainMemtune, is_single=True)
+    memoryBacking = XMLChildProperty(DomainMemoryBacking, is_single=True)
+    idmap = XMLChildProperty(DomainIdmap, is_single=True)
     resource = XMLChildProperty(DomainResource, is_single=True)
-    sysinfo = XMLChildProperty(SYSInfo, is_single=True)
+    sysinfo = XMLChildProperty(DomainSysinfo, is_single=True)
 
-    xmlns_qemu = XMLChildProperty(XMLNSQemu, is_single=True)
+    xmlns_qemu = XMLChildProperty(DomainXMLNSQemu, is_single=True)
 
 
     ###############################
@@ -258,48 +266,12 @@ class Guest(XMLBuilder):
     ########################################
 
     def add_device(self, dev):
-        """
-        Add the passed device to the guest's device list.
-
-        :param dev: VirtualDevice instance to attach to guest
-        """
-        self.add_child(dev)
+        self.devices.add_child(dev)
 
     def remove_device(self, dev):
-        """
-        Remove the passed device from the guest's device list
+        self.devices.remove_child(dev)
 
-        :param dev: VirtualDevice instance
-        """
-        self.remove_child(dev)
-
-    def get_devices(self, devtype):
-        """
-        Return a list of devices of type 'devtype' that will installed on
-        the guest.
-
-        :param devtype: Device type to search for (one of
-                        VirtualDevice.virtual_device_types)
-        """
-        newlist = []
-        for i in self._devices:
-            if devtype == "all" or i.virtual_device_type == devtype:
-                newlist.append(i)
-        return newlist
-
-    _devices = XMLChildProperty(
-        [VirtualDevice.virtual_device_classes[_n]
-         for _n in VirtualDevice.virtual_device_types],
-        relative_xpath="./devices")
-
-    def get_all_devices(self):
-        """
-        Return a list of all devices being installed with the guest
-        """
-        retlist = []
-        for devtype in VirtualDevice.virtual_device_types:
-            retlist.extend(self.get_devices(devtype))
-        return retlist
+    devices = XMLChildProperty(_DomainDevices, is_single=True)
 
 
     ############################
@@ -476,7 +448,7 @@ class Guest(XMLBuilder):
         try:
             # Create devices if required (disk images, etc.)
             if not dry:
-                for dev in self.get_all_devices():
+                for dev in self.devices.get_all():
                     dev.setup(meter)
 
             install_xml, final_xml = self._build_xml()
@@ -498,7 +470,7 @@ class Guest(XMLBuilder):
             self.installer.cleanup()
 
     def get_created_disks(self):
-        return [d for d in self.get_devices("disk") if d.storage_was_created]
+        return [d for d in self.devices.disk if d.storage_was_created]
 
     def cleanup_created_disks(self, meter):
         """
@@ -608,7 +580,7 @@ class Guest(XMLBuilder):
         return self.conn.stable_defaults(self.emulator, *args, **kwargs)
 
     def _usb_disabled(self):
-        controllers = [c for c in self.get_devices("controller") if
+        controllers = [c for c in self.devices.controller if
             c.type == "usb"]
         if not controllers:
             return False
@@ -617,9 +589,9 @@ class Guest(XMLBuilder):
     def add_default_input_device(self):
         if self.os.is_container():
             return
-        if self.get_devices("input"):
+        if self.devices.input:
             return
-        if not self.get_devices("graphics"):
+        if not self.devices.graphics:
             return
         if self._usb_disabled():
             return
@@ -633,12 +605,12 @@ class Guest(XMLBuilder):
             usb_keyboard = True
 
         if usb_tablet:
-            dev = VirtualInputDevice(self.conn)
+            dev = DeviceInput(self.conn)
             dev.type = "tablet"
             dev.bus = "usb"
             self.add_device(dev)
         if usb_keyboard:
-            dev = VirtualInputDevice(self.conn)
+            dev = DeviceInput(self.conn)
             dev.type = "keyboard"
             dev.bus = "usb"
             self.add_device(dev)
@@ -646,10 +618,10 @@ class Guest(XMLBuilder):
     def add_default_console_device(self):
         if self.skip_default_console:
             return
-        if self.get_devices("console") or self.get_devices("serial"):
+        if self.devices.console or self.devices.serial:
             return
 
-        dev = VirtualConsoleDevice(self.conn)
+        dev = DeviceConsole(self.conn)
         dev.type = dev.TYPE_PTY
         if self.os.is_s390x():
             dev.target_type = "sclp"
@@ -658,16 +630,16 @@ class Guest(XMLBuilder):
     def add_default_video_device(self):
         if self.os.is_container():
             return
-        if self.get_devices("video"):
+        if self.devices.video:
             return
-        if not self.get_devices("graphics"):
+        if not self.devices.graphics:
             return
-        self.add_device(VirtualVideoDevice(self.conn))
+        self.add_device(DeviceVideo(self.conn))
 
     def add_default_usb_controller(self):
         if self.os.is_container():
             return
-        if any([d.type == "usb" for d in self.get_devices("controller")]):
+        if any([d.type == "usb" for d in self.devices.controller]):
             return
 
         usb2 = False
@@ -687,17 +659,17 @@ class Guest(XMLBuilder):
             if not self.conn.check_support(
                     self.conn.SUPPORT_CONN_DEFAULT_USB2):
                 return
-            for dev in VirtualController.get_usb2_controllers(self.conn):
+            for dev in DeviceController.get_usb2_controllers(self.conn):
                 self.add_device(dev)
 
         if usb3:
             self.add_device(
-                VirtualController.get_usb3_controller(self.conn, self))
+                DeviceController.get_usb3_controller(self.conn, self))
 
     def add_default_channels(self):
         if self.skip_default_channel:
             return
-        if self.get_devices("channel"):
+        if self.devices.channel:
             return
         if self.os.is_s390x():
             # Not wanted for s390 apparently
@@ -706,7 +678,7 @@ class Guest(XMLBuilder):
         if (self.conn.is_qemu() and
             self._os_object.supports_qemu_ga() and
             self.conn.check_support(self.conn.SUPPORT_CONN_AUTOSOCKET)):
-            dev = VirtualChannelDevice(self.conn)
+            dev = DeviceChannel(self.conn)
             dev.type = "unix"
             dev.target_type = "virtio"
             dev.target_name = dev.CHANNEL_NAME_QEMUGA
@@ -715,18 +687,18 @@ class Guest(XMLBuilder):
     def add_default_graphics(self):
         if self.skip_default_graphics:
             return
-        if self.get_devices("graphics"):
+        if self.devices.graphics:
             return
         if self.os.is_container() and not self.conn.is_vz():
             return
         if self.os.arch not in ["x86_64", "i686", "ppc64", "ppc64le"]:
             return
-        self.add_device(VirtualGraphics(self.conn))
+        self.add_device(DeviceGraphics(self.conn))
 
     def add_default_rng(self):
         if self.skip_default_rng:
             return
-        if self.get_devices("rng"):
+        if self.devices.rng:
             return
         if not (self.os.is_x86() or
                 self.os.is_arm_machvirt() or
@@ -736,7 +708,7 @@ class Guest(XMLBuilder):
         if (self.conn.is_qemu() and
             self._os_object.supports_virtiorng() and
             self.conn.check_support(self.conn.SUPPORT_CONN_RNG_URANDOM)):
-            dev = VirtualRNGDevice(self.conn)
+            dev = DeviceRng(self.conn)
             dev.type = "random"
             dev.device = "/dev/urandom"
             self.add_device(dev)
@@ -756,14 +728,14 @@ class Guest(XMLBuilder):
         if not self.installer.needs_cdrom():
             return
 
-        dev = VirtualDisk(self.conn)
+        dev = DeviceDisk(self.conn)
         dev.device = dev.DEVICE_CDROM
         setattr(dev, "installer_media", not self.installer.livecd)
         self._install_cdrom_device = dev
         self.add_device(dev)
 
     def _remove_cdrom_install_media(self):
-        for dev in self.get_devices("disk"):
+        for dev in self.devices.disk:
             # Keep the install cdrom device around, but with no media attached.
             # But only if we are installing windows which has a multi stage
             # install.
@@ -784,7 +756,7 @@ class Guest(XMLBuilder):
         self._set_feature_defaults()
         self._set_pm_defaults()
 
-        for dev in self.get_all_devices():
+        for dev in self.devices.get_all():
             dev.set_defaults(self)
         self._check_address_multi()
         self._set_disk_defaults()
@@ -797,7 +769,7 @@ class Guest(XMLBuilder):
     def _is_full_os_container(self):
         if not self.os.is_container():
             return False
-        for fs in self.get_devices("filesystem"):
+        for fs in self.devices.filesystem:
             if fs.target == "/":
                 return True
         return False
@@ -875,6 +847,33 @@ class Guest(XMLBuilder):
             else:
                 self.emulator = "/usr/lib/xen/bin/qemu-dm"
 
+    def _set_cpu_x86_kvm_default(self):
+        if self.os.arch != self.conn.caps.host.cpu.arch:
+            return
+
+        self.cpu.set_special_mode(self.x86_cpu_default)
+        if self.x86_cpu_default != self.cpu.SPECIAL_MODE_HOST_MODEL_ONLY:
+            return
+        if not self.cpu.model:
+            return
+
+        # It's possible that the value HOST_MODEL_ONLY gets from
+        # <capabilities> is not actually supported by qemu/kvm
+        # combo which will be reported in <domainCapabilities>
+        domcaps = DomainCapabilities.build_from_guest(self)
+        domcaps_mode = domcaps.cpu.get_mode("custom")
+        if not domcaps_mode:
+            return
+
+        cpu_model = domcaps_mode.get_model(self.cpu.model)
+        if cpu_model and cpu_model.usable:
+            return
+
+        logging.debug("Host capabilities CPU '%s' is not supported "
+            "according to domain capabilities. Unsetting CPU model",
+            self.cpu.model)
+        self.cpu.model = None
+
     def _set_cpu_defaults(self):
         self.cpu.set_topology_defaults(self.vcpus)
 
@@ -893,13 +892,10 @@ class Guest(XMLBuilder):
             self.cpu.model = "cortex-a57"
 
         elif self.os.is_x86() and self.type == "kvm":
-            if self.os.arch != self.conn.caps.host.cpu.arch:
-                return
+            self._set_cpu_x86_kvm_default()
 
-            self.cpu.set_special_mode(self.x86_cpu_default)
             if self._os_object.broken_x2apic():
                 self.cpu.add_feature("x2apic", policy="disable")
-
 
     def _hyperv_supported(self):
         if (self.os.loader_type == "pflash" and
@@ -990,7 +986,7 @@ class Guest(XMLBuilder):
         has_spapr_scsi = False
         has_virtio_scsi = False
         has_any_scsi = False
-        for dev in self.get_devices("controller"):
+        for dev in self.devices.controller:
             if dev.type == "scsi":
                 has_any_scsi = True
                 if dev.address.type == "spapr-vio":
@@ -1000,9 +996,9 @@ class Guest(XMLBuilder):
 
         # Add spapr-vio controller if needed
         if not has_spapr_scsi:
-            for dev in self.get_devices("disk"):
+            for dev in self.devices.disk:
                 if dev.address.type == "spapr-vio":
-                    ctrl = VirtualController(self.conn)
+                    ctrl = DeviceController(self.conn)
                     ctrl.type = "scsi"
                     ctrl.address.set_addrstr("spapr-vio")
                     self.add_device(ctrl)
@@ -1012,9 +1008,9 @@ class Guest(XMLBuilder):
         if ((self.os.is_arm_machvirt() or self.os.is_pseries()) and
             not has_any_scsi and
             not has_virtio_scsi):
-            for dev in self.get_devices("disk"):
+            for dev in self.devices.disk:
                 if dev.bus == "scsi":
-                    ctrl = VirtualController(self.conn)
+                    ctrl = DeviceController(self.conn)
                     ctrl.type = "scsi"
                     ctrl.model = "virtio-scsi"
                     self.add_device(ctrl)
@@ -1023,7 +1019,7 @@ class Guest(XMLBuilder):
 
     def _check_address_multi(self):
         addresses = {}
-        for d in self.get_all_devices():
+        for d in self.devices.get_all():
             if d.address.type != d.address.ADDRESS_TYPE_PCI:
                 continue
             if None in [d.address.domain, d.address.bus, d.address.slot]:
@@ -1070,7 +1066,7 @@ class Guest(XMLBuilder):
         return False
 
     def _set_disk_defaults(self):
-        disks = self.get_devices("disk")
+        disks = self.devices.disk
 
         def set_disk_bus(d):
             if d.is_floppy():
@@ -1124,7 +1120,7 @@ class Guest(XMLBuilder):
             net_model = self._os_object.default_netmodel()
 
         if net_model:
-            for net in self.get_devices("interface"):
+            for net in self.devices.interface:
                 if not net.model:
                     net.model = net_model
 
@@ -1138,7 +1134,7 @@ class Guest(XMLBuilder):
         else:
             default = "es1370"
 
-        for sound in self.get_devices("sound"):
+        for sound in self.devices.sound:
             if sound.model == sound.MODEL_DEFAULT:
                 sound.model = default
 
@@ -1156,7 +1152,7 @@ class Guest(XMLBuilder):
 
             gfx.type = gtype
 
-        for dev in self.get_devices("graphics"):
+        for dev in self.devices.graphics:
             if dev.type == "default":
                 _set_type(dev)
 
@@ -1189,19 +1185,19 @@ class Guest(XMLBuilder):
         if self.skip_default_channel:
             return
 
-        for chn in self.get_devices("channel"):
+        for chn in self.devices.channel:
             if chn.type == chn.TYPE_SPICEVMC:
                 return
 
         if self.conn.check_support(self.conn.SUPPORT_CONN_CHAR_SPICEVMC):
-            agentdev = VirtualChannelDevice(self.conn)
+            agentdev = DeviceChannel(self.conn)
             agentdev.type = agentdev.TYPE_SPICEVMC
             self.add_device(agentdev)
 
     def _add_spice_sound(self):
         if self.skip_default_sound:
             return
-        if self.get_devices("sound"):
+        if self.devices.sound:
             return
         if not self.os.is_hvm():
             return
@@ -1209,12 +1205,12 @@ class Guest(XMLBuilder):
                 self.os.is_arm_machvirt):
             return
 
-        self.add_device(VirtualAudio(self.conn))
+        self.add_device(DeviceSound(self.conn))
 
     def _add_spice_usbredir(self):
         if self.skip_default_usbredir:
             return
-        if self.get_devices("redirdev"):
+        if self.devices.redirdev:
             return
         if not self.os.is_x86():
             return
@@ -1225,23 +1221,23 @@ class Guest(XMLBuilder):
         # and directly assigned devices are forced to fall back to USB1
         # https://bugzilla.redhat.com/show_bug.cgi?id=1135488
         for ignore in range(2):
-            dev = VirtualRedirDevice(self.conn)
+            dev = DeviceRedirdev(self.conn)
             dev.bus = "usb"
             dev.type = "spicevmc"
             self.add_device(dev)
 
     def has_spice(self):
-        for gfx in self.get_devices("graphics"):
+        for gfx in self.devices.graphics:
             if gfx.type == gfx.TYPE_SPICE:
                 return True
 
     def has_gl(self):
-        for gfx in self.get_devices("graphics"):
+        for gfx in self.devices.graphics:
             if gfx.gl:
                 return True
 
     def has_listen_none(self):
-        for gfx in self.get_devices("graphics"):
+        for gfx in self.devices.graphics:
             listen = gfx.get_first_listen_type()
             if listen and listen == "none":
                 return True
@@ -1257,13 +1253,13 @@ class Guest(XMLBuilder):
         if self.os.is_arm_machvirt():
             video_model = "virtio"
 
-        for video in self.get_devices("video"):
+        for video in self.devices.video:
             if video.model == video.MODEL_DEFAULT:
                 video.model = video_model
                 if video.model == 'virtio' and self.has_gl():
                     video.accel3d = True
 
     def _set_panic_defaults(self):
-        for panic in self.get_devices("panic"):
-            if panic.model == VirtualPanicDevice.MODEL_DEFAULT:
-                panic.model = VirtualPanicDevice.get_default_model(self.os)
+        for panic in self.devices.panic:
+            if panic.model == DevicePanic.MODEL_DEFAULT:
+                panic.model = DevicePanic.get_default_model(self.os)

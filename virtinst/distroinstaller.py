@@ -2,27 +2,16 @@
 # Copyright 2006-2009, 2013, 2014 Red Hat, Inc.
 # Daniel P. Berrange <berrange@redhat.com>
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import logging
 import os
 
+from . import urldetect
 from . import urlfetcher
 from . import util
-from .devicedisk import VirtualDisk
+from .devices import DeviceDisk
 from .initrdinject import perform_initrd_injections
 from .kernelupload import upload_kernel_initrd
 from .installer import Installer
@@ -111,7 +100,7 @@ class DistroInstaller(Installer):
     def _get_store(self, guest, fetcher):
         # Caller is responsible for calling fetcher prepare/cleanup if needed
         if not self._cached_store:
-            self._cached_store = urlfetcher.getDistroStore(guest, fetcher)
+            self._cached_store = urldetect.getDistroStore(guest, fetcher)
         return self._cached_store
 
     def _prepare_local(self):
@@ -119,13 +108,13 @@ class DistroInstaller(Installer):
 
     def _prepare_cdrom_url(self, guest, fetcher):
         store = self._get_store(guest, fetcher)
-        media = store.acquireBootDisk(guest)
+        media = store.acquireBootISO()
         self._tmpfiles.append(media)
         return media
 
     def _prepare_kernel_url(self, guest, fetcher):
         store = self._get_store(guest, fetcher)
-        kernel, initrd, args = store.acquireKernel(guest)
+        kernel, initrd, args = store.acquireKernel()
         self._tmpfiles.append(kernel)
         if initrd:
             self._tmpfiles.append(initrd)
@@ -181,7 +170,7 @@ class DistroInstaller(Installer):
             return _sanitize_url(val)
 
         try:
-            dev = VirtualDisk(self.conn)
+            dev = DeviceDisk(self.conn)
             dev.device = dev.DEVICE_CDROM
             dev.path = val
             dev.validate()

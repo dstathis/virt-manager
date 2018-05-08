@@ -2,20 +2,8 @@
 # Copyright 2009, 2013 Red Hat, Inc.
 # Cole Robinson <crobinso@redhat.com>
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import logging
 import os
@@ -39,7 +27,7 @@ def _compare_int(nodedev_val, hostdev_val):
 
 
 class DevNode(XMLBuilder):
-    _XML_ROOT_NAME = "devnode"
+    XML_NAME = "devnode"
 
     node_type = XMLProperty("./@type")
     path = XMLProperty(".")
@@ -103,7 +91,7 @@ class NodeDevice(XMLBuilder):
 
         XMLBuilder.__init__(self, *args, **kwargs)
 
-    _XML_ROOT_NAME = "device"
+    XML_NAME = "device"
 
     # Libvirt can generate bogus 'system' XML:
     # https://bugzilla.redhat.com/show_bug.cgi?id=1184131
@@ -339,8 +327,8 @@ class DRMDevice(NodeDevice):
 
 
 def _AddressStringToHostdev(conn, addrstr):
-    from .devicehostdev import VirtualHostDevice
-    hostdev = VirtualHostDevice(conn)
+    from .devices import DeviceHostdev
+    hostdev = DeviceHostdev(conn)
 
     try:
         # Determine addrstr type

@@ -1,4 +1,8 @@
 # Copyright (C) 2013, 2014 Red Hat, Inc.
+#
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
+
 
 import atexit
 import os
@@ -9,6 +13,7 @@ import unittest
 from tests import utils
 
 from virtinst import Guest
+from virtinst import urldetect
 from virtinst import urlfetcher
 from virtinst import util
 from virtinst.initrdinject import perform_initrd_injections
@@ -84,8 +89,8 @@ def _fetch_distro(distro):
     origenv = os.environ.pop("VIRTINST_TEST_SUITE")
     try:
         fetcher.prepareLocation()
-        store = urlfetcher.getDistroStore(guest, fetcher)
-        kernel, initrd, ignore = store.acquireKernel(guest)
+        store = urldetect.getDistroStore(guest, fetcher)
+        kernel, initrd, ignore = store.acquireKernel()
         cleanup.append(kernel)
         cleanup.append(initrd)
         distro.kernel = kernel

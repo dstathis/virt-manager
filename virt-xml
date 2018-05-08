@@ -3,20 +3,8 @@
 # Copyright 2013-2014 Red Hat, Inc.
 # Cole Robinson <crobinso@redhat.com>
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import difflib
 import logging
@@ -104,7 +92,7 @@ def get_domain_and_guest(conn, domstr):
 ################
 
 def _find_objects_to_edit(guest, action_name, editval, parserclass):
-    objlist = guest.list_children_for_class(parserclass.objclass)
+    objlist = util.listify(parserclass.lookup_prop(guest))
     idx = None
 
     if editval is None:
@@ -179,7 +167,7 @@ def check_xmlopt_collision(options):
 
 
 def action_edit(guest, options, parserclass):
-    if parserclass.objclass:
+    if parserclass.propname:
         inst = _find_objects_to_edit(guest, "edit", options.edit, parserclass)
     else:
         inst = guest
@@ -192,15 +180,13 @@ def action_edit(guest, options, parserclass):
 
 
 def action_add_device(guest, options, parserclass):
-    if (not parserclass.objclass or
-        guest.child_class_is_singleton(parserclass.objclass)):
+    if not parserclass.prop_is_list(guest):
         fail(_("Cannot use --add-device with --%s") % parserclass.cli_arg_name)
     return cli.parse_option_strings(options, guest, None)
 
 
 def action_remove_device(guest, options, parserclass):
-    if (not parserclass.objclass or
-        guest.child_class_is_singleton(parserclass.objclass)):
+    if not parserclass.prop_is_list(guest):
         fail(_("Cannot use --remove-device with --%s") %
              parserclass.cli_arg_name)
 
@@ -214,26 +200,21 @@ def action_remove_device(guest, options, parserclass):
 
 
 def action_build_xml(conn, options, parserclass):
-    guest = virtinst.Guest(conn)
-    ret_inst = None
-    inst = None
-
-    if parserclass.objclass:
-        inst = parserclass.objclass(conn)
-    elif parserclass.clear_attr:
-        ret_inst = getattr(guest, parserclass.clear_attr)
-    else:
+    if not parserclass.propname:
         fail(_("--build-xml not supported for --%s") %
              parserclass.cli_arg_name)
 
-    ret = cli.parse_option_strings(options, guest, inst)
-    if ret_inst:
-        return ret_inst
-    return ret
+    guest = virtinst.Guest(conn)
+    inst = parserclass.lookup_prop(guest)
+    if parserclass.prop_is_list(guest):
+        inst = inst.new()
+    else:
+        inst = inst.__class__(conn)
+    return cli.parse_option_strings(options, guest, inst)
 
 
 def setup_device(dev):
-    if getattr(dev, "virtual_device_type", None) != "disk":
+    if getattr(dev, "DEVICE_TYPE", None) != "disk":
         return
     if getattr(dev, "virt_xml_setup", None) is True:
         return
@@ -438,7 +419,7 @@ def main(conn=None):
     check_action_collision(options)
     parserclass = check_xmlopt_collision(options)
 
-    if options.update and not parserclass.objclass:
+    if options.update and not parserclass.propname:
         fail(_("Don't know how to --update for --%s") %
              (parserclass.cli_arg_name))
 
@@ -449,16 +430,20 @@ def main(conn=None):
             print_stdout(dev.get_xml_config())
         return 0
 
-    if options.update and active_xmlobj:
-        devs, action = prepare_changes(active_xmlobj, options, parserclass)
-        update_changes(domain, devs, action, options.confirm)
+    if options.update:
+        if active_xmlobj:
+            devs, action = prepare_changes(active_xmlobj, options, parserclass)
+            update_changes(domain, devs, action, options.confirm)
+        else:
+            logging.warning(
+                _("The VM is not running, --update is inapplicable."))
     if options.define:
         devs, action = prepare_changes(inactive_xmlobj, options, parserclass)
         applied = define_changes(conn, inactive_xmlobj,
                                  devs, action, options.confirm)
         if not options.update and active_xmlobj and applied:
             print_stdout(
-                _("Changes will take effect after the next domain shutdown."))
+                _("Changes will take effect after the domain is fully powered off."))
     if not options.update and not options.define:
         prepare_changes(inactive_xmlobj, options, parserclass)
 

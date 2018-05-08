@@ -2,20 +2,8 @@
 # Copyright 2008, 2013, 2015 Red Hat, Inc.
 # Cole Robinson <crobinso@redhat.com>
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import os
 import logging
@@ -34,7 +22,7 @@ _DEFAULT_MPATH_TARGET = "/dev/mapper"
 
 
 class _StoragePermissions(XMLBuilder):
-    _XML_ROOT_NAME = "permissions"
+    XML_NAME = "permissions"
     _XML_PROP_ORDER = ["mode", "owner", "group", "label"]
 
     mode = XMLProperty("./mode")
@@ -82,9 +70,18 @@ def _get_default_pool_path(conn):
     return path
 
 
+class _EnumerateSource(XMLBuilder):
+    XML_NAME = "source"
+
+
+class _EnumerateSources(XMLBuilder):
+    XML_NAME = "sources"
+    sources = XMLChildProperty(_EnumerateSource)
+
+
 class _Host(XMLBuilder):
     _XML_PROP_ORDER = ["name", "port"]
-    _XML_ROOT_NAME = "host"
+    XML_NAME = "host"
 
     name = XMLProperty("./@name")
     port = XMLProperty("./@port", is_int=True)
@@ -163,20 +160,13 @@ class StoragePool(_StorageObject):
                 return []
             raise
 
-        class _EnumerateSource(XMLBuilder):
-            _XML_ROOT_NAME = "source"
-        class _EnumerateSources(XMLBuilder):
-            _XML_ROOT_NAME = "sources"
-            sources = XMLChildProperty(_EnumerateSource)
-
-
         ret = []
         sources = _EnumerateSources(conn, xml)
         for source in sources.sources:
             source_xml = source.get_xml_config()
 
             pool_xml = "<pool>\n%s\n</pool>" % (
-                XMLBuilder.xml_indent(source_xml, 2))
+                util.xml_indent(source_xml, 2))
             parseobj = StoragePool(conn, parsexml=pool_xml)
             parseobj.type = pool_type
 
@@ -382,7 +372,7 @@ class StoragePool(_StorageObject):
     # Properties #
     ##############
 
-    _XML_ROOT_NAME = "pool"
+    XML_NAME = "pool"
     _XML_PROP_ORDER = ["name", "type", "uuid",
                        "capacity", "allocation", "available",
                        "format", "hosts",
@@ -480,7 +470,7 @@ class StoragePool(_StorageObject):
     ##################
 
     def validate(self):
-        if self.supports_property("host") and not self.hosts:
+        if self.supports_property("hosts") and not self.hosts:
             raise RuntimeError(_("Hostname is required"))
         if (self.supports_property("source_path") and
             self.type != self.TYPE_LOGICAL and
@@ -540,8 +530,8 @@ class StoragePool(_StorageObject):
             try:
                 pool.undefine()
             except Exception as e:
-                logging.debug("Error cleaning up pool after failure: " +
-                              "%s" % str(e))
+                logging.debug("Error cleaning up pool after failure: %s",
+                              str(e))
             raise RuntimeError(errmsg)
 
         self.conn.cache_new_pool(pool)
@@ -687,7 +677,7 @@ class StorageVolume(_StorageObject):
     # XML properties #
     ##################
 
-    _XML_ROOT_NAME = "volume"
+    XML_NAME = "volume"
     _XML_PROP_ORDER = ["name", "key", "capacity", "allocation", "format",
                        "target_path", "permissions"]
 

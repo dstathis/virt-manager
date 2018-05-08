@@ -4,20 +4,8 @@
 #
 # Cloning a virtual machine module.
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 
 import logging
 import re
@@ -27,10 +15,10 @@ import libvirt
 
 from . import util
 from .guest import Guest
-from .deviceinterface import VirtualNetworkInterface
-from .devicedisk import VirtualDisk
+from .devices import DeviceInterface
+from .devices import DeviceDisk
 from .storage import StorageVolume
-from .devicechar import VirtualChannelDevice
+from .devices import DeviceChannel
 
 
 class Cloner(object):
@@ -126,17 +114,17 @@ class Cloner(object):
         disklist = []
         for path in util.listify(paths):
             try:
-                device = VirtualDisk.DEVICE_DISK
+                device = DeviceDisk.DEVICE_DISK
                 if not path:
-                    device = VirtualDisk.DEVICE_CDROM
+                    device = DeviceDisk.DEVICE_CDROM
 
-                disk = VirtualDisk(self.conn)
+                disk = DeviceDisk(self.conn)
                 disk.path = path
                 disk.device = device
 
                 if (not self.preserve_dest_disks and
                     disk.wants_storage_creation()):
-                    vol_install = VirtualDisk.build_vol_install(
+                    vol_install = DeviceDisk.build_vol_install(
                         self.conn, os.path.basename(disk.path),
                         disk.get_parent_pool(), .000001, False)
                     disk.set_vol_install(vol_install)
@@ -152,7 +140,7 @@ class Cloner(object):
         return [d.path for d in self.clone_disks]
     clone_paths = property(get_clone_paths, set_clone_paths)
 
-    # VirtualDisk instances for the new disk paths
+    # DeviceDisk instances for the new disk paths
     @property
     def clone_disks(self):
         return self._clone_disks
@@ -161,7 +149,7 @@ class Cloner(object):
     def set_clone_macs(self, mac):
         maclist = util.listify(mac)
         for m in maclist:
-            msg = VirtualNetworkInterface.is_conflict_net(self.conn, m)[1]
+            msg = DeviceInterface.is_conflict_net(self.conn, m)[1]
             if msg:
                 raise RuntimeError(msg)
 
@@ -170,7 +158,7 @@ class Cloner(object):
         return self._clone_macs
     clone_macs = property(get_clone_macs, set_clone_macs)
 
-    # VirtualDisk instances of the original disks being cloned
+    # DeviceDisk instances of the original disks being cloned
     @property
     def original_disks(self):
         return self._original_disks
@@ -309,8 +297,6 @@ class Cloner(object):
             return
 
         if clone_disk.get_vol_object():
-            # XXX We could always do this with vol upload?
-
             # Special case: non remote cloning of a guest using
             # managed block devices: fall back to local cloning if
             # we have permissions to do so. This validation check
@@ -362,18 +348,18 @@ class Cloner(object):
             self.clone_nvram = os.path.join(nvram_dir,
                                             "%s_VARS.fd" % self._clone_name)
 
-        nvram = VirtualDisk(self.conn)
+        nvram = DeviceDisk(self.conn)
         nvram.path = self.clone_nvram
         if (not self.preserve_dest_disks and
             nvram.wants_storage_creation()):
 
-            old_nvram = VirtualDisk(self.conn)
+            old_nvram = DeviceDisk(self.conn)
             old_nvram.path = self._guest.os.nvram
             if not old_nvram.get_vol_object():
                 raise RuntimeError(_("Path does not exist: %s") %
                                      old_nvram.path)
 
-            nvram_install = VirtualDisk.build_vol_install(
+            nvram_install = DeviceDisk.build_vol_install(
                     self.conn, os.path.basename(nvram.path),
                     nvram.get_parent_pool(), nvram.get_size(), False)
             nvram_install.input_vol = old_nvram.get_vol_object()
@@ -405,27 +391,27 @@ class Cloner(object):
         self._guest.name = self._clone_name
         self._guest.uuid = self._clone_uuid
         self._clone_macs.reverse()
-        for dev in self._guest.get_devices("graphics"):
+        for dev in self._guest.devices.graphics:
             if dev.port and dev.port != -1:
                 logging.warning(_("Setting the graphics device port to autoport, "
                                "in order to avoid conflicting."))
                 dev.port = -1
 
         clone_macs = self._clone_macs[:]
-        for iface in self._guest.get_devices("interface"):
+        for iface in self._guest.devices.interface:
             iface.target_dev = None
 
             if clone_macs:
                 mac = clone_macs.pop()
             else:
-                mac = VirtualNetworkInterface.generate_mac(self.conn)
+                mac = DeviceInterface.generate_mac(self.conn)
             iface.macaddr = mac
 
         # Changing storage XML
         for i, orig_disk in enumerate(self._original_disks):
             clone_disk = self._clone_disks[i]
 
-            for disk in self._guest.get_devices("disk"):
+            for disk in self._guest.devices.disk:
                 if disk.target == orig_disk.target:
                     xmldisk = disk
 
@@ -440,8 +426,8 @@ class Cloner(object):
 
         # For guest agent channel, remove a path to generate a new one with
         # new guest name
-        for channel in self._guest.get_devices("channel"):
-            if channel.type == VirtualChannelDevice.TYPE_UNIX:
+        for channel in self._guest.devices.channel:
+            if channel.type == DeviceChannel.TYPE_UNIX:
                 channel.source_path = None
 
         if self._guest.os.nvram:
@@ -507,7 +493,7 @@ class Cloner(object):
         clonebase = os.path.join(dirname, clonebase)
         return util.generate_name(
                     clonebase,
-                    lambda p: VirtualDisk.path_definitely_exists(self.conn, p),
+                    lambda p: DeviceDisk.path_definitely_exists(self.conn, p),
                     suffix,
                     lib_collision=False)
 
@@ -536,13 +522,13 @@ class Cloner(object):
     ############################
 
     # Parse disk paths that need to be cloned from the original guest's xml
-    # Return a list of VirtualDisk instances pointing to the original
+    # Return a list of DeviceDisk instances pointing to the original
     # storage
     def _get_original_disks_info(self):
         clonelist = []
         retdisks = []
 
-        for disk in self._guest.get_devices("disk"):
+        for disk in self._guest.devices.disk:
             if self._do_we_clone_device(disk):
                 clonelist.append(disk)
                 continue
@@ -552,12 +538,12 @@ class Cloner(object):
             validate = not self.preserve_dest_disks
 
             try:
-                device = VirtualDisk.DEVICE_DISK
+                device = DeviceDisk.DEVICE_DISK
                 if not disk.path:
-                    # Tell VirtualDisk we are a cdrom to allow empty media
-                    device = VirtualDisk.DEVICE_CDROM
+                    # Tell DeviceDisk we are a cdrom to allow empty media
+                    device = DeviceDisk.DEVICE_CDROM
 
-                newd = VirtualDisk(self.conn)
+                newd = DeviceDisk(self.conn)
                 newd.path = disk.path
                 newd.device = device
                 newd.driver_name = disk.driver_name

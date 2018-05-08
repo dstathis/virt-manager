@@ -3,20 +3,8 @@
 # Copyright 2008 Sun Microsystems, Inc.  All rights reserved.
 # Use is subject to license terms.
 #
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 2 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-# MA 02110-1301 USA.
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
 #
 
 import collections
@@ -148,7 +136,7 @@ def parse_netdev_entry(conn, ifaces, fullkey, value):
             net = checkiface
             break
     if not net:
-        net = virtinst.VirtualNetworkInterface(conn)
+        net = virtinst.DeviceInterface(conn)
         setattr(net, "vmx_inst", inst)
         net.set_default_source()
         ifaces.append(net)
@@ -195,7 +183,7 @@ def parse_disk_entry(conn, disks, fullkey, value, topdir):
             disk = checkdisk
             break
     if not disk:
-        disk = virtinst.VirtualDisk(conn)
+        disk = virtinst.DeviceDisk(conn)
         disk.bus = bus
         setattr(disk, "vmx_inst", inst)
         disks.append(disk)

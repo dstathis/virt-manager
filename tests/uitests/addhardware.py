@@ -1,3 +1,6 @@
+# This work is licensed under the GNU GPLv2 or later.
+# See the COPYING file in the top-level directory.
+
 import tests
 from tests.uitests import utils as uiutils
 
@@ -69,7 +72,7 @@ class AddHardware(uiutils.UITestCase):
         addhw = self._open_addhw_window(details)
         tab = self._select_hw(addhw, "Controller", "controller-tab")
         typ.click()
-        tab.find("USB", "menu item").click()
+        tab.find("^USB$", "menu item").click()
         tab.find("Model:", "combo box").click_combo_entry()
         tab.find("USB 3", "menu item").click()
         # Can't add more than 1 USB controller, so finish isn't sensitive
@@ -229,6 +232,7 @@ class AddHardware(uiutils.UITestCase):
         tab = self._select_hw(addhw, "Network", "network-tab")
         tab.find("mac-address-enable", "check box").click()
         src.click()
+        self.sleep(1)
         self.pressKey("Home")
         tab.find_fuzzy("plainbridge-portgroups", "menu item").click()
         c = tab.find_fuzzy("Portgroup:", "combo box")
@@ -289,8 +293,9 @@ class AddHardware(uiutils.UITestCase):
         # Catch a port error
         alert = self.app.root.find("vmm dialog", "alert")
         alert.find_fuzzy("Port must be above 5900", "label")
-        alert.find("OK", "push button").click()
+        alert.find("Close", "push button").click()
         tab.find("graphics-port", "spin button").text = "5920"
+        finish.click()
         uiutils.check_in_loop(lambda: details.active)
 
         # Spice regular example
@@ -477,7 +482,7 @@ class AddHardware(uiutils.UITestCase):
         self._open_addhw_window(details)
         tab = self._select_hw(addhw, "Sound", "sound-tab")
         tab.find("Model:", "combo box").click()
-        tab.find("ich6", "menu item").click()
+        tab.find("HDA", "menu item").click()
         finish.click()
         uiutils.check_in_loop(lambda: details.active)
 
@@ -493,7 +498,7 @@ class AddHardware(uiutils.UITestCase):
         self._open_addhw_window(details)
         tab = self._select_hw(addhw, "Watchdog", "watchdog-tab")
         tab.find("Model:", "combo box").click()
-        tab.find("i6300esb", "menu item").click()
+        tab.find("I6300", "menu item").click()
         tab.find("Action:", "combo box").click()
         tab.find("Pause the guest", "menu item").click()
         finish.click()
@@ -525,7 +530,7 @@ class AddHardware(uiutils.UITestCase):
         # Add RNG
         self._open_addhw_window(details)
         tab = self._select_hw(addhw, "RNG", "rng-tab")
-        tab.find("Device:", "text").text = "/dev/random"
+        tab.find("Host Device:", "text").text = "/dev/random"
         finish.click()
         uiutils.check_in_loop(lambda: details.active)
 
