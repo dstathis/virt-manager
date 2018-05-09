@@ -1076,7 +1076,7 @@ class vmmDomain(vmmLibvirtObject):
         try:
             ifaces = self._backend.interfaceAddresses(source=1)
             for iface in ifaces:
-                if iface['name'] != 'lo' and IP_REGEX.match(ifaces[iface]['addrs'][0]['addr']):
+                if iface != 'lo' and IP_REGEX.match(ifaces[iface]['addrs'][0]['addr']):
                     return ifaces[iface]['addrs'][0]['addr']
             return "IP not found"
         except libvirt.libvirtError as err:
