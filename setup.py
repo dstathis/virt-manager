@@ -313,20 +313,6 @@ class my_rpm(distutils.core.Command):
 class configure(distutils.core.Command):
     user_options = [
         ("prefix=", None, "installation prefix"),
-        ("qemu-user=", None,
-         "user libvirt uses to launch qemu processes (default=root)"),
-        ("libvirt-package-names=", None,
-         "list of libvirt distro packages virt-manager will check for on "
-         "first run. comma separated string (default=none)"),
-        ("kvm-package-names=", None,
-         "recommended kvm packages virt-manager will check for on first run "
-         "(default=none)"),
-        ("askpass-package-names=", None,
-         "name of your distro's askpass package(s) (default=none)"),
-        ("preferred-distros=", None,
-         "Distros to list first in the New VM wizard (default=none)"),
-        ("stable-defaults", None,
-         "Hide config bits that are not considered stable (default=no)"),
         ("default-graphics=", None,
          "Default graphics type (spice or vnc) (default=spice)"),
         ("default-hvs=", None,
@@ -341,12 +327,6 @@ class configure(distutils.core.Command):
 
     def initialize_options(self):
         self.prefix = sysprefix
-        self.qemu_user = None
-        self.libvirt_package_names = None
-        self.kvm_package_names = None
-        self.askpass_package_names = None
-        self.preferred_distros = None
-        self.stable_defaults = None
         self.default_graphics = None
         self.default_hvs = None
 
@@ -355,19 +335,6 @@ class configure(distutils.core.Command):
         template = ""
         template += "[config]\n"
         template += "prefix = %s\n" % self.prefix
-        if self.qemu_user is not None:
-            template += "default_qemu_user = %s\n" % self.qemu_user
-        if self.libvirt_package_names is not None:
-            template += "libvirt_packages = %s\n" % self.libvirt_package_names
-        if self.kvm_package_names is not None:
-            template += "hv_packages = %s\n" % self.kvm_package_names
-        if self.askpass_package_names is not None:
-            template += "askpass_packages = %s\n" % self.askpass_package_names
-        if self.preferred_distros is not None:
-            template += "preferred_distros = %s\n" % self.preferred_distros
-        if self.stable_defaults is not None:
-            template += ("stable_defaults = %s\n" %
-                         self.stable_defaults)
         if self.default_graphics is not None:
             template += "default_graphics = %s\n" % self.default_graphics
         if self.default_hvs is not None:
@@ -570,6 +537,32 @@ class TestDist(TestBaseCommand):
         TestBaseCommand.run(self)
 
 
+class CheckSpell(distutils.core.Command):
+    user_options = []
+    description = "Check code for common misspellings"
+
+    def initialize_options(self):
+        pass
+
+    def finalize_options(self):
+        pass
+
+    def run(self):
+        try:
+            import codespell_lib
+        except ImportError:
+            raise ImportError('codespell is not installed')
+
+        files = ["setup.py", "virt-install", "virt-clone",
+                 "virt-convert", "virt-xml", "virt-manager",
+                 "virtcli", "virtinst", "virtconv", "virtManager",
+                 "tests"]
+        # pylint: disable=protected-access
+        codespell_lib._codespell.main(
+            '-I', 'tests/codespell_dict.txt',
+            '--skip', '*.pyc,*.zip,*.vmdk,*.iso,*.xml', *files)
+
+
 class CheckPylint(distutils.core.Command):
     user_options = [
         ("jobs=", "j", "use multiple processes to speed up Pylint"),
@@ -593,15 +586,11 @@ class CheckPylint(distutils.core.Command):
                  "tests"]
 
         output_format = sys.stdout.isatty() and "colorized" or "text"
-        exclude = ["virtinst/progress.py"]
 
         print("running pycodestyle")
         style_guide = pycodestyle.StyleGuide(
             config_file='tests/pycodestyle.cfg',
             paths=files
-        )
-        style_guide.options.exclude = pycodestyle.normalize_paths(
-            ','.join(exclude)
         )
         report = style_guide.check_files()
         if style_guide.options.count:
@@ -611,7 +600,7 @@ class CheckPylint(distutils.core.Command):
         pylint_opts = [
             "--rcfile", "tests/pylint.cfg",
             "--output-format=%s" % output_format,
-        ] + ["--ignore"] + [os.path.basename(p) for p in exclude]
+        ]
         if self.jobs:
             pylint_opts += ["--jobs=%d" % self.jobs]
 
@@ -688,6 +677,7 @@ distutils.core.setup(
         'configure': configure,
 
         'pylint': CheckPylint,
+        'codespell': CheckSpell,
         'rpm': my_rpm,
         'test': TestCommand,
         'test_ui': TestUI,

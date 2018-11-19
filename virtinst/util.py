@@ -60,26 +60,6 @@ def libvirt_collision(collision_cb, val):
     return check
 
 
-def validate_uuid(val):
-    if not isinstance(val, str):
-        raise ValueError(_("UUID must be a string."))
-
-    form = re.match("[a-fA-F0-9]{8}[-]([a-fA-F0-9]{4}[-]){3}[a-fA-F0-9]{12}$",
-                    val)
-    if form is None:
-        form = re.match("[a-fA-F0-9]{32}$", val)
-        if form is None:
-            raise ValueError(
-                  _("UUID must be a 32-digit hexadecimal number. It may take "
-                    "the form xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx or may "
-                    "omit hyphens altogether."))
-
-        else:   # UUID had no dashes, so add them in
-            val = (val[0:8] + "-" + val[8:12] + "-" + val[12:16] +
-                   "-" + val[16:20] + "-" + val[20:32])
-    return val
-
-
 def validate_name(name_type, val):
     # Rather than try and match libvirt's regex, just forbid things we
     # know don't work
@@ -129,7 +109,7 @@ def generate_name(base, collision_cb, suffix="", lib_collision=True,
     :param lib_collision: If true, the collision_cb is not a boolean function,
         and instead throws a libvirt error on failure
     :param start_num: The number to start at for generating non colliding names
-    :param sep: The seperator to use between the basename and the
+    :param sep: The separator to use between the basename and the
         generated number (default is "-")
     :param force_num: Force the generated name to always end with a number
     :param collidelist: An extra list of names to check for collision

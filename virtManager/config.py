@@ -175,24 +175,10 @@ class vmmConfig(object):
         # the keyring
         self.keyring = None
 
-        self.default_qemu_user = CLIConfig.default_qemu_user
-        self.preferred_distros = CLIConfig.preferred_distros
-        self.hv_packages = CLIConfig.hv_packages
-        self.libvirt_packages = CLIConfig.libvirt_packages
-        self.askpass_package = CLIConfig.askpass_package
         self.default_graphics_from_config = CLIConfig.default_graphics
         self.default_hvs = CLIConfig.default_hvs
 
-        if self.test_first_run:
-            # Populate some package defaults to simplify git testing
-            if not self.libvirt_packages:
-                self.libvirt_packages = ["libvirt-daemon",
-                                         "libvirt-daemon-config-network"]
-            if not self.hv_packages:
-                self.hv_packages = ["qemu-kvm"]
-
         self.default_storage_format_from_config = "qcow2"
-        self.cpu_default_from_config = DomainCpu.SPECIAL_MODE_HOST_MODEL_ONLY
         self.default_console_resizeguest = 0
         self.default_add_spice_usbredir = "yes"
 
@@ -526,24 +512,11 @@ class vmmConfig(object):
     def set_storage_format(self, typ):
         self.conf.set("/new-vm/storage-format", typ.lower())
 
-    def get_default_cpu_setting(self, raw=False, for_cpu=False):
+    def get_default_cpu_setting(self):
         ret = self.conf.get("/new-vm/cpu-default")
-        whitelist = [DomainCpu.SPECIAL_MODE_HOST_MODEL_ONLY,
-                     DomainCpu.SPECIAL_MODE_HOST_MODEL,
-                     DomainCpu.SPECIAL_MODE_HV_DEFAULT]
 
-        if ret not in whitelist:
-            ret = "default"
-        if ret == "default" and not raw:
-            ret = self.cpu_default_from_config
-            if ret not in whitelist:
-                ret = whitelist[0]
-
-        if for_cpu and ret == DomainCpu.SPECIAL_MODE_HOST_MODEL:
-            # host-model has known issues, so use our 'copy cpu'
-            # behavior until host-model does what we need
-            ret = DomainCpu.SPECIAL_MODE_HOST_COPY
-
+        if ret not in DomainCpu.SPECIAL_MODES:
+            ret = DomainCpu.SPECIAL_MODE_APP_DEFAULT
         return ret
     def set_default_cpu_setting(self, val):
         self.conf.set("/new-vm/cpu-default", val.lower())
@@ -565,17 +538,20 @@ class vmmConfig(object):
 
     def add_container_url(self, url):
         self._url_add_helper("/urls/containers", url)
+    def get_container_urls(self):
+        return self.conf.get("/urls/containers") or []
+
     def add_media_url(self, url):
         self._url_add_helper("/urls/urls", url)
+    def get_media_urls(self):
+        return self.conf.get("/urls/urls") or []
+
     def add_iso_path(self, path):
         self._url_add_helper("/urls/isos", path)
-
-    def get_container_urls(self):
-        return self.conf.get("/urls/containers")
-    def get_media_urls(self):
-        return self.conf.get("/urls/urls")
     def get_iso_paths(self):
-        return self.conf.get("/urls/isos")
+        return self.conf.get("/urls/isos") or []
+    def on_iso_paths_changed(self, cb):
+        return self.conf.notify_add("/urls/isos", cb)
 
 
     # Whether to ask about fixing path permissions

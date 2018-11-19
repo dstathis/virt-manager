@@ -101,13 +101,9 @@ class DeviceHostdev(Device):
     _XML_PROP_ORDER = ["mode", "type", "managed", "vendor", "product",
                        "domain", "bus", "slot", "function"]
 
-    mode = XMLProperty("./@mode", default_cb=lambda s: "subsystem")
+    mode = XMLProperty("./@mode")
     type = XMLProperty("./@type")
-
-    def _get_default_managed(self):
-        return self.conn.is_xen() and "no" or "yes"
-    managed = XMLProperty("./@managed", is_yesno=True,
-                          default_cb=_get_default_managed)
+    managed = XMLProperty("./@managed", is_yesno=True)
 
     vendor = XMLProperty("./source/vendor/@id")
     product = XMLProperty("./source/product/@id")
@@ -115,12 +111,7 @@ class DeviceHostdev(Device):
     device = XMLProperty("./source/address/@device")
     bus = XMLProperty("./source/address/@bus")
 
-    def _get_default_domain(self):
-        if self.type == "pci":
-            return "0x0"
-        return None
-    domain = XMLProperty("./source/address/@domain",
-                         default_cb=_get_default_domain)
+    domain = XMLProperty("./source/address/@domain")
     function = XMLProperty("./source/address/@function")
     slot = XMLProperty("./source/address/@slot")
 
@@ -132,3 +123,25 @@ class DeviceHostdev(Device):
     scsi_bus = XMLProperty("./source/address/@bus", is_int=True)
     scsi_target = XMLProperty("./source/address/@target", is_int=True)
     scsi_unit = XMLProperty("./source/address/@unit", is_int=True)
+
+    # type=net handling
+    net_interface = XMLProperty("./source/interface")
+
+    # type=misc handling
+    misc_char = XMLProperty("./source/char")
+
+    # type=misc handling
+    storage_block = XMLProperty("./source/block")
+
+
+    ##################
+    # Default config #
+    ##################
+
+    def set_defaults(self, guest):
+        if self.managed is None:
+            self.managed = self.conn.is_xen() and "no" or "yes"
+        if not self.mode:
+            self.mode = "subsystem"
+        if self.type == "pci" and not self.domain:
+            self.domain = "0x0"

@@ -7,12 +7,7 @@
 # This work is licensed under the GNU GPLv2 or later.
 # See the COPYING file in the top-level directory.
 
-import os
-import stat
-import pwd
-import subprocess
 import logging
-import re
 
 from .. import diskbackend
 from .. import util
@@ -20,63 +15,17 @@ from .device import Device
 from ..xmlbuilder import XMLBuilder, XMLChildProperty, XMLProperty
 
 
-def _qemu_sanitize_drvtype(phystype, fmt, manual_format=False):
+def _qemu_sanitize_drvtype(phystype, fmt):
     """
     Sanitize libvirt storage volume format to a valid qemu driver type
     """
     raw_list = ["iso"]
 
     if phystype == DeviceDisk.TYPE_BLOCK:
-        if not fmt:
-            return DeviceDisk.DRIVER_TYPE_RAW
-        if fmt and not manual_format:
-            return DeviceDisk.DRIVER_TYPE_RAW
-
+        return DeviceDisk.DRIVER_TYPE_RAW
     if fmt in raw_list:
         return DeviceDisk.DRIVER_TYPE_RAW
-
     return fmt
-
-
-def _is_dir_searchable(uid, username, path):
-    """
-    Check if passed directory is searchable by uid
-    """
-    if "VIRTINST_TEST_SUITE" in os.environ:
-        return True
-
-    try:
-        statinfo = os.stat(path)
-    except OSError:
-        return False
-
-    if uid == statinfo.st_uid:
-        flag = stat.S_IXUSR
-    elif uid == statinfo.st_gid:
-        flag = stat.S_IXGRP
-    else:
-        flag = stat.S_IXOTH
-
-    if bool(statinfo.st_mode & flag):
-        return True
-
-    # Check POSIX ACL (since that is what we use to 'fix' access)
-    cmd = ["getfacl", path]
-    try:
-        proc = subprocess.Popen(cmd,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
-        out, err = proc.communicate()
-    except OSError:
-        logging.debug("Didn't find the getfacl command.")
-        return False
-
-    if proc.returncode != 0:
-        logging.debug("Cmd '%s' failed: %s", cmd, err)
-        return False
-
-    pattern = "user:%s:..x" % username
-    return bool(re.search(pattern.encode("utf-8", "replace"), out))
 
 
 class _Host(XMLBuilder):
@@ -110,43 +59,71 @@ class DeviceDisk(Device):
     CACHE_MODE_WRITEBACK = "writeback"
     CACHE_MODE_DIRECTSYNC = "directsync"
     CACHE_MODE_UNSAFE = "unsafe"
-    cache_types = [CACHE_MODE_NONE, CACHE_MODE_WRITETHROUGH,
+    CACHE_MODES = [CACHE_MODE_NONE, CACHE_MODE_WRITETHROUGH,
         CACHE_MODE_WRITEBACK, CACHE_MODE_DIRECTSYNC, CACHE_MODE_UNSAFE]
 
     DISCARD_MODE_IGNORE = "ignore"
     DISCARD_MODE_UNMAP = "unmap"
-    discard_types = [DISCARD_MODE_IGNORE, DISCARD_MODE_UNMAP]
+    DISCARD_MODES = [DISCARD_MODE_IGNORE, DISCARD_MODE_UNMAP]
+
+    DETECT_ZEROES_MODE_OFF = "off"
+    DETECT_ZEROES_MODE_ON = "on"
+    DETECT_ZEROES_MODE_UNMAP = "unmap"
+    DETECT_ZEROES_MODES = [DETECT_ZEROES_MODE_OFF, DETECT_ZEROES_MODE_ON,
+                           DETECT_ZEROES_MODE_UNMAP]
 
     DEVICE_DISK = "disk"
     DEVICE_LUN = "lun"
     DEVICE_CDROM = "cdrom"
     DEVICE_FLOPPY = "floppy"
-    devices = [DEVICE_DISK, DEVICE_LUN, DEVICE_CDROM, DEVICE_FLOPPY]
 
     TYPE_FILE = "file"
     TYPE_BLOCK = "block"
     TYPE_DIR = "dir"
     TYPE_VOLUME = "volume"
     TYPE_NETWORK = "network"
-    types = [TYPE_FILE, TYPE_BLOCK, TYPE_DIR, TYPE_NETWORK]
 
     IO_MODE_NATIVE = "native"
     IO_MODE_THREADS = "threads"
-    io_modes = [IO_MODE_NATIVE, IO_MODE_THREADS]
-
-    error_policies = ["ignore", "stop", "enospace", "report"]
+    IO_MODES = [IO_MODE_NATIVE, IO_MODE_THREADS]
 
     @staticmethod
-    def disk_type_to_xen_driver_name(disk_type):
-        """
-        Convert a value of DeviceDisk.type to it's associated Xen
-        <driver name=/> property
-        """
-        if disk_type == DeviceDisk.TYPE_BLOCK:
-            return "phy"
-        elif disk_type == DeviceDisk.TYPE_FILE:
-            return "file"
-        return "file"
+    def get_old_recommended_buses(guest):
+        ret = []
+        if guest.os.is_hvm() or guest.conn.is_test():
+            if not guest.os.is_q35():
+                ret.append("ide")
+            ret.append("sata")
+            ret.append("fdc")
+            ret.append("scsi")
+            ret.append("usb")
+
+            if guest.type in ["qemu", "kvm", "test"]:
+                ret.append("sd")
+                ret.append("virtio")
+                if "scsi" not in ret:
+                    ret.append("scsi")
+
+        if guest.conn.is_xen() or guest.conn.is_test():
+            ret.append("xen")
+
+        return ret
+
+    @staticmethod
+    def get_recommended_buses(guest, domcaps, devtype):
+        # try to get supported disk bus types from domain capabilities
+        if "bus" in domcaps.devices.disk.enum_names():
+            buses = domcaps.devices.disk.get_enum("bus").get_values()
+        else:
+            buses = DeviceDisk.get_old_recommended_buses(guest)
+
+        bus_map = {
+            "disk": ["ide", "sata", "scsi", "sd", "usb", "virtio", "xen"],
+            "floppy": ["fdc"],
+            "cdrom": ["ide", "sata", "scsi"],
+            "lun": ["scsi"],
+        }
+        return [bus for bus in buses if bus in bus_map.get(devtype, [])]
 
     @staticmethod
     def pretty_disk_bus(bus):
@@ -171,149 +148,59 @@ class DeviceDisk(Device):
          may have disappeared behind our back, but that shouldn't have bad
          effects in practice.)
         """
-        if path is None:
-            return False
-
-        try:
-            (vol, pool) = diskbackend.check_if_path_managed(conn, path)
-            ignore = pool
-
-            if vol:
-                return True
-
-            if not conn.is_remote():
-                return os.path.exists(path)
-        except Exception:
-            pass
-
-        return False
-
-    @staticmethod
-    def check_path_search_for_user(conn, path, username):
-        """
-        Check if the passed user has search permissions for all the
-        directories in the disk path.
-
-        :returns: List of the directories the user cannot search, or empty list
-        """
-        if path is None:
-            return []
-        if conn.is_remote():
-            return []
-        if username == "root":
-            return []
-        if diskbackend.path_is_url(path):
-            return []
-
-        try:
-            # Get UID for string name
-            uid = pwd.getpwnam(username)[2]
-        except Exception as e:
-            logging.debug("Error looking up username: %s", str(e))
-            return []
-
-        fixlist = []
-
-        if os.path.isdir(path):
-            dirname = path
-            base = "-"
-        else:
-            dirname, base = os.path.split(path)
-
-        while base:
-            if not _is_dir_searchable(uid, username, dirname):
-                fixlist.append(dirname)
-
-            dirname, base = os.path.split(dirname)
-
-        return fixlist
+        return diskbackend.path_definitely_exists(conn, path)
 
     @staticmethod
     def check_path_search(conn, path):
-        # Only works for qemu and DAC
-        if conn.is_remote() or not conn.is_qemu_system():
-            return None, []
+        """
+        Check if the connection DAC user has search permissions for all the
+        directories in the passed path.
 
-        from virtcli import CLIConfig
-        user = CLIConfig.default_qemu_user
-        try:
-            for secmodel in conn.caps.host.secmodels:
-                if secmodel.model != "dac":
-                    continue
+        :returns: Class with:
+            - List of the directories the user cannot search, or empty list
+            - username we checked for or None if not applicable
+            - uid we checked for or None if not application
+        """
+        class SearchData(object):
+            def __init__(self):
+                self.user = None
+                self.uid = None
+                self.fixlist = []
 
-                label = None
-                for baselabel in secmodel.baselabels:
-                    if baselabel.type in ["qemu", "kvm"]:
-                        label = baselabel.content
-                        break
-                if not label:
-                    continue
+        searchdata = SearchData()
+        if path is None:
+            return searchdata
+        if conn.is_remote():
+            return searchdata
+        if not conn.is_qemu_system():
+            return searchdata
+        if diskbackend.path_is_url(path):
+            return searchdata
+        if diskbackend.path_is_network_vol(conn, path):
+            return searchdata
 
-                pwuid = pwd.getpwuid(
-                    int(label.split(":")[0].replace("+", "")))
-                if pwuid:
-                    user = pwuid[0]
-        except Exception:
-            logging.debug("Exception grabbing qemu DAC user", exc_info=True)
-            return None, []
+        user, uid = conn.caps.host.get_qemu_baselabel()
+        if not user:
+            return searchdata
+        if uid == 0:
+            return searchdata
 
-        return user, DeviceDisk.check_path_search_for_user(conn, path, user)
+        searchdata.user = user
+        searchdata.uid = uid
+        searchdata.fixlist = diskbackend.is_path_searchable(path, uid, user)
+        searchdata.fixlist.reverse()
+        return searchdata
 
     @staticmethod
-    def fix_path_search_for_user(conn, path, username):
+    def fix_path_search(conn, searchdata):
         """
-        Try to fix any permission problems found by check_path_search_for_user
+        Try to fix any permission problems found by check_path_search
 
         :returns: Return a dictionary of entries {broken path : error msg}
         """
-        def fix_perms(dirname, useacl=True):
-            if useacl:
-                cmd = ["setfacl", "--modify", "user:%s:x" % username, dirname]
-                proc = subprocess.Popen(cmd,
-                                        stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE)
-                out, err = proc.communicate()
-
-                logging.debug("Ran command '%s'", cmd)
-                if out or err:
-                    logging.debug("out=%s\nerr=%s", out, err)
-
-                if proc.returncode != 0:
-                    raise ValueError(err)
-            else:
-                logging.debug("Setting +x on %s", dirname)
-                mode = os.stat(dirname).st_mode
-                newmode = mode | stat.S_IXOTH
-                os.chmod(dirname, newmode)
-                if os.stat(dirname).st_mode != newmode:
-                    # Trying to change perms on vfat at least doesn't work
-                    # but also doesn't seem to error. Try and detect that
-                    raise ValueError(_("Permissions on '%s' did not stick") %
-                                     dirname)
-
-        fixlist = DeviceDisk.check_path_search_for_user(conn, path, username)
-        if not fixlist:
-            return []
-
-        fixlist.reverse()
-        errdict = {}
-
-        useacl = True
-        for dirname in fixlist:
-            try:
-                try:
-                    fix_perms(dirname, useacl)
-                except Exception:
-                    # If acl fails, fall back to chmod and retry
-                    if not useacl:
-                        raise
-                    useacl = False
-
-                    logging.debug("setfacl failed, trying old fashioned way")
-                    fix_perms(dirname, useacl)
-            except Exception as e:
-                errdict[dirname] = str(e)
-
+        ignore = conn
+        errdict = diskbackend.set_dirs_searchable(
+                searchdata.fixlist, searchdata.user)
         return errdict
 
     @staticmethod
@@ -344,7 +231,7 @@ class DeviceDisk(Device):
             vols.append(backpath)
 
         ret = []
-        vms = conn.fetch_all_guests()
+        vms = conn.fetch_all_domains()
         for vm in vms:
             if not read_only:
                 if path in [vm.os.kernel, vm.os.initrd, vm.os.dtb]:
@@ -463,7 +350,7 @@ class DeviceDisk(Device):
 
 
     _XML_PROP_ORDER = [
-        "type", "device", "snapshot_policy",
+        "_type", "_device", "snapshot_policy",
         "driver_name", "driver_type",
         "driver_cache", "driver_discard", "driver_detect_zeroes",
         "driver_io", "error_policy",
@@ -680,7 +567,6 @@ class DeviceDisk(Device):
         if self.source_protocol:
             return DeviceDisk.TYPE_NETWORK
         return self.TYPE_FILE
-    type = XMLProperty("./@type", default_cb=_get_default_type)
 
     def _clear_source_xml(self):
         """
@@ -737,13 +623,32 @@ class DeviceDisk(Device):
     # XML properties #
     ##################
 
-    device = XMLProperty("./@device",
-                         default_cb=lambda s: s.DEVICE_DISK)
+    # type, device, driver_name, driver_type handling
+    # These are all weirdly intertwined so require some special handling
+    def _get_type(self):
+        if self._type:
+            return self._type
+        return self._get_default_type()
+    def _set_type(self, val):
+        self._type = val
+    type = property(_get_type, _set_type)
+    _type = XMLProperty("./@type")
+
+    def _get_device(self):
+        if self._device:
+            return self._device
+        return self.DEVICE_DISK
+    def _set_device(self, val):
+        self._device = val
+    device = property(_get_device, _set_device)
+    _device = XMLProperty("./@device")
+    driver_name = XMLProperty("./driver/@name")
+    driver_type = XMLProperty("./driver/@type")
+
+
     snapshot_policy = XMLProperty("./@snapshot")
-    driver_name = XMLProperty("./driver/@name",
-                              default_cb=_get_default_driver_name)
-    driver_type = XMLProperty("./driver/@type",
-                              default_cb=_get_default_driver_type)
+
+    driver_copy_on_read = XMLProperty("./driver/@copy_on_read", is_onoff=True)
 
     sgio = XMLProperty("./@sgio")
 
@@ -772,6 +677,16 @@ class DeviceDisk(Device):
     iotune_wis = XMLProperty("./iotune/write_iops_sec", is_int=True)
 
     seclabels = XMLChildProperty(_DiskSeclabel, relative_xpath="./source")
+
+    geometry_cyls = XMLProperty("./geometry/@cyls", is_int=True)
+    geometry_heads = XMLProperty("./geometry/@heads", is_int=True)
+    geometry_secs = XMLProperty("./geometry/@secs", is_int=True)
+    geometry_trans = XMLProperty("./geometry/@trans")
+
+    reservations_managed = XMLProperty("./source/reservations/@managed")
+    reservations_source_type = XMLProperty("./source/reservations/source/@type")
+    reservations_source_path = XMLProperty("./source/reservations/source/@path")
+    reservations_source_mode = XMLProperty("./source/reservations/source/@mode")
 
 
     #################################
@@ -881,7 +796,7 @@ class DeviceDisk(Device):
 
         self._storage_backend.validate(self)
 
-    def setup(self, meter=None):
+    def build_storage(self, meter):
         """
         Build storage (if required)
 
@@ -899,28 +814,6 @@ class DeviceDisk(Device):
 
         parent_pool = self.get_vol_install().pool
         self._change_backend(None, vol_object, parent_pool)
-
-    def set_defaults(self, guest):
-        if self.is_cdrom():
-            self.read_only = True
-
-        if self.is_cdrom() and guest.os.is_s390x():
-            self.bus = "scsi"
-
-        if not self.conn.is_qemu():
-            return
-        if not self.is_disk():
-            return
-        if not self.type == self.TYPE_BLOCK:
-            return
-
-        # Enable cache=none and io=native for block devices. Would
-        # be nice if qemu did this for us but that time has long passed.
-        if not self.driver_cache:
-            self.driver_cache = self.CACHE_MODE_NONE
-        if not self.driver_io:
-            self.driver_io = self.IO_MODE_NATIVE
-
 
     def is_size_conflict(self):
         """
@@ -958,7 +851,7 @@ class DeviceDisk(Device):
         disk.
         :returns: str prefix, or None if no reasonable guess can be made
         """
-        # The upper limits here aren't necessarilly 1024, but let the HV
+        # The upper limits here aren't necessarily 1024, but let the HV
         # error as appropriate.
         def _return(prefix):
             nummap = {
@@ -1040,3 +933,59 @@ class DeviceDisk(Device):
         else:
             raise ValueError(_("Only %s disks for bus '%s' are supported"
                                % (maxnode, self.bus)))
+
+
+    ##################
+    # Default config #
+    ##################
+
+    def _default_bus(self, guest):
+        if self.is_floppy():
+            return "fdc"
+        if guest.os.is_xenpv():
+            return "xen"
+        if not guest.os.is_hvm():
+            # This likely isn't correct, but it's kind of a catch all
+            # for virt types we don't know how to handle.
+            return "ide"
+
+        if guest.os.is_arm_machvirt():
+            # We prefer virtio-scsi for machvirt, gets us hotplug
+            return "scsi"
+        if self.is_disk() and guest.supports_virtiodisk():
+            return "virtio"
+        if guest.os.is_pseries() and self.is_cdrom():
+            return "scsi"
+        if guest.os.is_arm():
+            return "sd"
+        if guest.os.is_q35():
+            return "sata"
+        if self.is_cdrom() and guest.os.is_s390x():
+            return "scsi"
+        return "ide"
+
+    def set_defaults(self, guest):
+        if not self._device:
+            self._device = self._get_device()
+        if not self._type:
+            self._type = self._get_default_type()
+        if not self.driver_name:
+            self.driver_name = self._get_default_driver_name()
+        if not self.driver_type:
+            self.driver_type = self._get_default_driver_type()
+        if not self.bus:
+            self.bus = self._default_bus(guest)
+        if self.is_cdrom():
+            self.read_only = True
+
+        if (self.conn.is_qemu() and
+            self.is_disk() and
+            self.type == self.TYPE_BLOCK):
+            if not self.driver_cache:
+                self.driver_cache = self.CACHE_MODE_NONE
+            if not self.driver_io:
+                self.driver_io = self.IO_MODE_NATIVE
+
+        if not self.target:
+            used_targets = [d.target for d in guest.devices.disk if d.target]
+            self.generate_target(used_targets)

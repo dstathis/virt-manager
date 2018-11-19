@@ -1,11 +1,16 @@
 <domain type="kvm">
   <name>foobar</name>
   <uuid>00000000-1111-2222-3333-444444444444</uuid>
+  <metadata>
+    <libosinfo:libosinfo xmlns:libosinfo="http://libosinfo.org/xmlns/libvirt/domain/1.0">
+      <libosinfo:os id="http://redhat.com/rhel/6.4"/>
+    </libosinfo:libosinfo>
+  </metadata>
   <memory>65536</memory>
   <currentMemory>65536</currentMemory>
   <vcpu>1</vcpu>
   <os>
-    <type arch="x86_64">hvm</type>
+    <type arch="x86_64" machine="pc">hvm</type>
     <boot dev="network"/>
     <boot dev="hd"/>
   </os>
@@ -14,9 +19,7 @@
     <apic/>
     <vmport state="off"/>
   </features>
-  <cpu mode="custom" match="exact">
-    <model>Opteron_G4</model>
-  </cpu>
+  <cpu mode="host-model"/>
   <clock offset="utc">
     <timer name="rtc" tickpolicy="catchup"/>
     <timer name="pit" tickpolicy="delay"/>
@@ -72,11 +75,16 @@
 <domain type="kvm">
   <name>foobar</name>
   <uuid>00000000-1111-2222-3333-444444444444</uuid>
+  <metadata>
+    <libosinfo:libosinfo xmlns:libosinfo="http://libosinfo.org/xmlns/libvirt/domain/1.0">
+      <libosinfo:os id="http://redhat.com/rhel/6.4"/>
+    </libosinfo:libosinfo>
+  </metadata>
   <memory>65536</memory>
   <currentMemory>65536</currentMemory>
   <vcpu>1</vcpu>
   <os>
-    <type arch="x86_64">hvm</type>
+    <type arch="x86_64" machine="pc">hvm</type>
     <boot dev="hd"/>
   </os>
   <features>
@@ -84,9 +92,7 @@
     <apic/>
     <vmport state="off"/>
   </features>
-  <cpu mode="custom" match="exact">
-    <model>Opteron_G4</model>
-  </cpu>
+  <cpu mode="host-model"/>
   <clock offset="utc">
     <timer name="rtc" tickpolicy="catchup"/>
     <timer name="pit" tickpolicy="delay"/>

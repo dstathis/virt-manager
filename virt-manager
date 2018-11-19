@@ -17,8 +17,8 @@ import gi
 gi.require_version('LibvirtGLib', '1.0')
 from gi.repository import LibvirtGLib
 
-from virtinst import util as util
-from virtinst import cli as virtinstcli
+from virtinst import util
+from virtinst import cli
 from virtcli import CLIConfig
 
 # This is massively heavy handed, but I can't figure out any way to shut
@@ -122,8 +122,8 @@ def parse_commandline():
     parser.set_defaults(domain=None)
 
     # Trace every libvirt API call to debug output
-    parser.add_argument("--trace-libvirt",
-        help=argparse.SUPPRESS, action="store_true")
+    parser.add_argument("--trace-libvirt", choices=["all", "mainloop"],
+        help=argparse.SUPPRESS)
 
     # Don't load any connections on startup to test first run
     # PackageKit integration
@@ -170,7 +170,7 @@ def parse_commandline():
 def main():
     (options, leftovers) = parse_commandline()
 
-    virtinstcli.setupLogging("virt-manager", options.debug, False, False)
+    cli.setupLogging("virt-manager", options.debug, False, False)
 
     import virtManager
     logging.debug("virt-manager version: %s", CLIConfig.version)
@@ -180,7 +180,9 @@ def main():
         logging.debug("Libvirt tracing requested")
         import virtManager.module_trace
         import libvirt
-        virtManager.module_trace.wrap_module(libvirt, regex=None)
+        virtManager.module_trace.wrap_module(libvirt,
+                mainloop=(options.trace_libvirt == "mainloop"),
+                regex=None)
 
     # With F27 gnome+wayland we need to set these before GTK import
     os.environ["GSETTINGS_SCHEMA_DIR"] = CLIConfig.gsettings_dir
@@ -286,8 +288,6 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         logging.debug("Received KeyboardInterrupt. Exiting application.")
-    except SystemExit:
-        raise
     except Exception as run_e:
         if "Gtk" not in globals():
             raise

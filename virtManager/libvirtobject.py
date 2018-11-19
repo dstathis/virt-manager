@@ -97,6 +97,17 @@ class vmmLibvirtObject(vmmGObject):
     def get_connkey(self):
         return self._key
 
+    def is_domain(self):
+        return self.class_name() == "domain"
+    def is_network(self):
+        return self.class_name() == "network"
+    def is_pool(self):
+        return self.class_name() == "pool"
+    def is_nodedev(self):
+        return self.class_name() == "nodedev"
+    def is_interface(self):
+        return self.class_name() == "interface"
+
     def change_name_backend(self, newbackend):
         # Used for changing the backing object after a rename
         self._backend = newbackend
@@ -112,9 +123,9 @@ class vmmLibvirtObject(vmmGObject):
 
         logging.debug("Changing %s name from %s to %s",
                       self, oldname, newname)
-        origxml = xmlobj.get_xml_config()
+        origxml = xmlobj.get_xml()
         xmlobj.name = newname
-        newxml = xmlobj.get_xml_config()
+        newxml = xmlobj.get_xml()
 
         try:
             self._key = newname
@@ -293,7 +304,7 @@ class vmmLibvirtObject(vmmGObject):
         """
         origxml = None
         if self._xmlobj:
-            origxml = self._xmlobj.get_xml_config()
+            origxml = self._xmlobj.get_xml()
 
         self._invalidate_xml()
         active_xml = self._XMLDesc(self._active_xml_flags)
@@ -371,9 +382,9 @@ class vmmLibvirtObject(vmmGObject):
             we detect the actual XML change and log it correctly.
         """
         if not origxml:
-            origxml = self._make_xmlobj_to_define().get_xml_config()
+            origxml = self._make_xmlobj_to_define().get_xml()
 
-        newxml = xmlobj.get_xml_config()
+        newxml = xmlobj.get_xml()
         self.log_redefine_xml_diff(self, origxml, newxml)
 
         if origxml != newxml:

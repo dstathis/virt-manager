@@ -35,16 +35,16 @@ class _URLTestData(object):
     Data is stored in test_urls.ini
     """
     def __init__(self, name, url, detectdistro,
-            testxen, testbootiso, testshortcircuit, kernelarg):
+            testxen, testshortcircuit, kernelarg, kernelregex):
         self.name = name
         self.url = url
         self.detectdistro = detectdistro
         self.arch = self._find_arch()
         self.distroclass = self._distroclass_for_name(self.name)
         self.kernelarg = kernelarg
+        self.kernelregex = kernelregex
 
         self.testxen = testxen
-        self.testbootiso = testbootiso
 
         # If True, pass in the expected distro value to getDistroStore
         # so it can short circuit the lookup checks. Speeds up the tests
@@ -120,33 +120,20 @@ def _storeForDistro(fetcher, guest):
 
 
 def _sanitize_osdict_name(detectdistro):
-    """
-    Try to handle working with out of date osinfo-db data. Like if
-    checking distro FedoraXX but osinfo-db latest Fedora is
-    FedoraXX-1, convert to use that
-    """
-    if not detectdistro:
-        return detectdistro
+    if detectdistro in ["none", "None", None]:
+        return None
 
     if detectdistro == "testsuite-fedora-rawhide":
         # Special value we use in the test suite to always return the latest
         # fedora when checking rawhide URL
         return OSDB.latest_fedora_version()
 
-    if re.match("fedora[0-9]+", detectdistro):
-        if not OSDB.lookup_os(detectdistro):
-            ret = OSDB.latest_fedora_version()
-            print("\nConverting detectdistro=%s to latest value=%s" %
-                    (detectdistro, ret))
-            return ret
-
     return detectdistro
 
 
 def _testURL(fetcher, testdata):
     """
-    Test that our URL detection logic works for grabbing kernel, xen
-    kernel, and boot.iso
+    Test that our URL detection logic works for grabbing kernels
     """
     distname = testdata.name
     arch = testdata.arch
@@ -155,11 +142,8 @@ def _testURL(fetcher, testdata):
     hvmguest.os.arch = arch
     xenguest.os.arch = arch
     if testdata.testshortcircuit:
-        hvmguest.os_variant = detectdistro
-        xenguest.os_variant = detectdistro
-    else:
-        hvmguest.os_variant = None
-        xenguest.os_variant = None
+        hvmguest.set_os_name(detectdistro)
+        xenguest.set_os_name(detectdistro)
 
     try:
         hvmstore = _storeForDistro(fetcher, hvmguest)
@@ -173,8 +157,10 @@ def _testURL(fetcher, testdata):
             (distname, fetcher.location, "".join(traceback.format_exc())))
 
     for s in [hvmstore, xenstore]:
-        if (s and testdata.distroclass and
-            not isinstance(s, testdata.distroclass)):
+        if not s:
+            continue
+
+        if not isinstance(s, testdata.distroclass):
             raise AssertionError("Unexpected URLDistro class:\n"
                 "found  = %s\n"
                 "expect = %s\n\n"
@@ -184,8 +170,7 @@ def _testURL(fetcher, testdata):
                  fetcher.location))
 
         # Make sure the stores are reporting correct distro name/variant
-        if (s and detectdistro and
-            detectdistro != s.get_osdict_info()):
+        if detectdistro != s.get_osdict_info():
             raise AssertionError(
                 "Detected OS did not match expected values:\n"
                 "found   = %s\n"
@@ -200,23 +185,20 @@ def _testURL(fetcher, testdata):
     # to fetch files for that part
     def fakeAcquireFile(filename):
         logging.debug("Fake acquiring %s", filename)
-        return fetcher.hasFile(filename)
+        if not fetcher.hasFile(filename):
+            return False
+        return filename
     fetcher.acquireFile = fakeAcquireFile
-
-    # Fetch boot iso
-    if testdata.testbootiso:
-        boot = hvmstore.acquireBootISO()
-        logging.debug("acquireBootISO: %s", str(boot))
-
-        if boot is not True:
-            raise AssertionError("%s-%s: bootiso fetching failed" %
-                                 (distname, arch))
 
     # Fetch regular kernel
     kernel, initrd, kernelargs = hvmstore.acquireKernel()
-    if kernel is not True or initrd is not True:
+    if kernel is False or initrd is False:
         AssertionError("%s-%s: hvm kernel fetching failed" %
                        (distname, arch))
+
+    if testdata.kernelregex and not re.match(testdata.kernelregex, kernel):
+        raise AssertionError("kernel=%s but testdata.kernelregex='%s'" %
+                (kernel, testdata.kernelregex))
 
     if testdata.kernelarg == "None":
         if bool(kernelargs):
@@ -230,8 +212,8 @@ def _testURL(fetcher, testdata):
     # Fetch xen kernel
     if xenstore:
         kernel, initrd, kernelargs = xenstore.acquireKernel()
-        if kernel is not True or initrd is not True:
-            raise AssertionError("%s-%s: xen kernel fetching" %
+        if kernel is False or initrd is False:
+            raise AssertionError("%s-%s: xen kernel fetching failed" %
                                  (distname, arch))
 
 
@@ -289,9 +271,9 @@ def _make_tests():
         d = _URLTestData(name, vals["url"],
                 vals.get("distro", None),
                 vals.get("testxen", "0") == "1",
-                vals.get("testbootiso", "0") == "1",
                 vals.get("testshortcircuit", "0") == "1",
-                vals.get("kernelarg", None))
+                vals.get("kernelarg", None),
+                vals.get("kernelregex", None))
         urls[d.name] = d
 
     keys = list(urls.keys())

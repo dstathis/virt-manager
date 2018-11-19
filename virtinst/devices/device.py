@@ -35,10 +35,6 @@ class DeviceAddress(XMLBuilder):
     ADDRESS_TYPE_CCID          = "ccid"
     ADDRESS_TYPE_SPAPR_VIO     = "spapr-vio"
 
-    TYPES = [ADDRESS_TYPE_PCI, ADDRESS_TYPE_DRIVE,
-             ADDRESS_TYPE_VIRTIO_SERIAL, ADDRESS_TYPE_CCID,
-             ADDRESS_TYPE_SPAPR_VIO]
-
     XML_NAME = "address"
     _XML_PROP_ORDER = ["type", "domain", "controller", "bus", "slot",
                        "function", "target", "unit", "multifunction"]
@@ -119,14 +115,3 @@ class Device(XMLBuilder):
     @property
     def DEVICE_TYPE(self):
         return self.XML_NAME
-
-    def setup(self, meter=None):
-        """
-        Perform potentially hazardous device initialization, like
-        storage creation or host device reset
-
-        :param meter: Optional progress meter to use
-        """
-        # Will be overwritten by subclasses if necessary.
-        ignore = meter
-        return

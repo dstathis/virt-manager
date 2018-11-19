@@ -14,20 +14,21 @@ import libvirt
 
 import virtinst
 from virtinst import util
-from virtinst import DeviceRng
 
 from . import vmmenu
 from . import uiutil
-from .baseclass import vmmGObjectUI
 from .addhardware import vmmAddHardware
-from .choosecd import vmmChooseCD
+from .addstorage import vmmAddStorage
+from .baseclass import vmmGObjectUI
 from .engine import vmmEngine
 from .fsdetails import vmmFSDetails
 from .gfxdetails import vmmGraphicsDetails
+from .graphwidgets import Sparkline
+from .mediacombo import vmmMediaCombo
 from .netlist import vmmNetworkList
+from .oslist import vmmOSList
 from .snapshots import vmmSnapshotPage
 from .storagebrowse import vmmStorageBrowser
-from .graphwidgets import Sparkline
 
 
 # Parameters that can be edited in the details window
@@ -37,6 +38,8 @@ from .graphwidgets import Sparkline
  EDIT_FIRMWARE,
  EDIT_DESC,
  EDIT_IDMAP,
+
+ EDIT_OS_NAME,
 
  EDIT_VCPUS,
  EDIT_MAXVCPUS,
@@ -56,10 +59,14 @@ from .graphwidgets import Sparkline
  EDIT_DISK_REMOVABLE,
  EDIT_DISK_CACHE,
  EDIT_DISK_IO,
+ EDIT_DISK_DISCARD,
+ EDIT_DISK_DETECT_ZEROES,
  EDIT_DISK_BUS,
  EDIT_DISK_SERIAL,
  EDIT_DISK_FORMAT,
  EDIT_DISK_SGIO,
+ EDIT_DISK_PATH,
+ EDIT_DISK_PR,
 
  EDIT_SOUND_MODEL,
 
@@ -69,6 +76,7 @@ from .graphwidgets import Sparkline
  EDIT_NET_VPORT,
  EDIT_NET_SOURCE,
  EDIT_NET_MAC,
+ EDIT_NET_LINKSTATE,
 
  EDIT_GFX_PASSWD,
  EDIT_GFX_TYPE,
@@ -89,10 +97,11 @@ from .graphwidgets import Sparkline
  EDIT_CONTROLLER_MODEL,
 
  EDIT_TPM_TYPE,
+ EDIT_TPM_MODEL,
 
  EDIT_FS,
 
- EDIT_HOSTDEV_ROMBAR) = range(1, 49)
+ EDIT_HOSTDEV_ROMBAR) = range(1, 56)
 
 
 # Columns in hw list model
@@ -104,7 +113,7 @@ from .graphwidgets import Sparkline
 
 # Types for the hw list model: numbers specify what order they will be listed
 (HW_LIST_TYPE_GENERAL,
- HW_LIST_TYPE_INSPECTION,
+ HW_LIST_TYPE_OS,
  HW_LIST_TYPE_STATS,
  HW_LIST_TYPE_CPU,
  HW_LIST_TYPE_MEMORY,
@@ -146,7 +155,6 @@ remove_pages = [HW_LIST_TYPE_NIC, HW_LIST_TYPE_INPUT,
  DETAILS_PAGE_CONSOLE,
  DETAILS_PAGE_SNAPSHOTS) = range(3)
 
-_remove_tooltip = _("Remove this device from the virtual machine")
 
 
 def _calculate_disk_bus_index(disklist):
@@ -249,6 +257,8 @@ def _label_for_device(dev):
         label = _("TPM")
         if dev.device_path:
             label += (" %s" % dev.device_path)
+        else:
+            label += (" v%s" % dev.version)
         return label
 
     devmap = {
@@ -352,12 +362,12 @@ class vmmDetails(vmmGObjectUI):
     def get_instance(cls, parentobj, vm):
         try:
             # Maintain one dialog per VM
-            connkey = vm.get_connkey()
+            key = "%s+%s" % (vm.conn.get_uri(), vm.get_uuid())
             if cls._instances is None:
                 cls._instances = {}
-            if connkey not in cls._instances:
-                cls._instances[connkey] = vmmDetails(vm)
-            return cls._instances[connkey]
+            if key not in cls._instances:
+                cls._instances[key] = vmmDetails(vm)
+            return cls._instances[key]
         except Exception as e:
             if not parentobj:
                 raise
@@ -388,8 +398,8 @@ class vmmDetails(vmmGObjectUI):
         self.active_edits = []
 
         self.addhw = None
-        self.media_choosers = {"cdrom": None, "floppy": None}
         self.storage_browser = None
+        self._mediacombo = None
 
         self.ignoreDetails = False
 
@@ -397,6 +407,14 @@ class vmmDetails(vmmGObjectUI):
         self.console = vmmConsolePages(self.vm, self.builder, self.topwin)
         self.snapshots = vmmSnapshotPage(self.vm, self.builder, self.topwin)
         self.widget("snapshot-placeholder").add(self.snapshots.top_box)
+
+        self._mediacombo = vmmMediaCombo(self.conn, self.builder, self.topwin)
+        self.widget("disk-source-align").add(self._mediacombo.top_box)
+        self._mediacombo.set_mnemonic_label(
+                self.widget("disk-source-mnemonic"))
+        self._mediacombo.connect("changed",
+                lambda *x: self.enable_apply(x, EDIT_DISK_PATH))
+        self._mediacombo.show_clear_icon()
 
         self.fsDetails = vmmFSDetails(self.vm, self.builder, self.topwin)
         self.widget("fs-alignment").add(self.fsDetails.top_box)
@@ -448,6 +466,7 @@ class vmmDetails(vmmGObjectUI):
         self._addhwmenuitems = None
         self._shutdownmenu = None
         self._vmmenu = None
+        self._os_list = None
         self.init_menus()
         self.init_details()
 
@@ -529,20 +548,27 @@ class vmmDetails(vmmGObjectUI):
             "on_boot_init_path_changed": lambda *x: self.enable_apply(x, EDIT_INIT),
             "on_boot_init_args_changed": lambda *x: self.enable_apply(x, EDIT_INIT),
 
-            "on_disk_cdrom_connect_clicked": self.toggle_storage_media,
+
+            "on_disk_source_browse_clicked": self._disk_source_browse_clicked_cb,
             "on_disk_readonly_changed": lambda *x: self.enable_apply(x, EDIT_DISK_RO),
             "on_disk_shareable_changed": lambda *x: self.enable_apply(x, EDIT_DISK_SHARE),
             "on_disk_removable_changed": lambda *x: self.enable_apply(x, EDIT_DISK_REMOVABLE),
             "on_disk_cache_combo_changed": lambda *x: self.enable_apply(x, EDIT_DISK_CACHE),
             "on_disk_io_combo_changed": lambda *x: self.enable_apply(x, EDIT_DISK_IO),
+            "on_disk_discard_combo_changed": lambda *x: self.enable_apply(x, EDIT_DISK_DISCARD),
+            "on_disk_detect_zeroes_combo_changed": lambda *x: self.enable_apply(x, EDIT_DISK_DETECT_ZEROES),
             "on_disk_bus_combo_changed": lambda *x: self.enable_apply(x, EDIT_DISK_BUS),
             "on_disk_format_changed": self.disk_format_changed,
             "on_disk_serial_changed": lambda *x: self.enable_apply(x, EDIT_DISK_SERIAL),
             "on_disk_sgio_entry_changed": lambda *x: self.enable_apply(x, EDIT_DISK_SGIO),
+            "on_disk_pr_checkbox_toggled": lambda *x: self.enable_apply(x, EDIT_DISK_PR),
 
             "on_network_model_combo_changed": lambda *x: self.enable_apply(x, EDIT_NET_MODEL),
             "on_network_mac_entry_changed": lambda *x: self.enable_apply(x,
                 EDIT_NET_MAC),
+            "on_network_link_state_checkbox_toggled": lambda *x: self.enable_apply(x,
+                EDIT_NET_LINKSTATE),
+            "on_network_refresh_ip_clicked": self.refresh_ip,
 
             "on_sound_model_combo_changed": lambda *x: self.enable_apply(x,
                                              EDIT_SOUND_MODEL),
@@ -571,6 +597,8 @@ class vmmDetails(vmmGObjectUI):
 
             "on_hw_list_button_press_event": self.popup_addhw_menu,
 
+            "on_tpm_model_combo_changed": lambda *x: self.enable_apply(x, EDIT_TPM_MODEL),
+
             # Listeners stored in vmmConsolePages
             "on_details_menu_view_fullscreen_activate": (
                 self.console.details_toggle_fullscreen),
@@ -596,7 +624,8 @@ class vmmDetails(vmmGObjectUI):
         # Deliberately keep all this after signal connection
         self.vm.connect("state-changed", self.refresh_vm_state)
         self.vm.connect("resources-sampled", self.refresh_resources)
-        self.vm.connect("inspection-changed", lambda *x: self.refresh_inspection_page())
+        self.vm.connect("inspection-changed",
+                lambda *x: self.refresh_os_page())
 
         self.populate_hw_list()
 
@@ -615,16 +644,12 @@ class vmmDetails(vmmGObjectUI):
         if self.addhw:
             self.addhw.cleanup()
             self.addhw = None
-
         if self.storage_browser:
             self.storage_browser.cleanup()
             self.storage_browser = None
 
-        for key in self.media_choosers:
-            if self.media_choosers[key]:
-                self.media_choosers[key].cleanup()
-        self.media_choosers = {}
-
+        self._mediacombo.cleanup()
+        self._mediacombo = None
         self.console.cleanup()
         self.console = None
         self.snapshots.cleanup()
@@ -916,7 +941,13 @@ class vmmDetails(vmmGObjectUI):
         uiutil.set_grid_row_visible(
             self.widget("overview-chipset-title"), show_chipset)
 
-        # Inspection page
+        # OS/Inspection page
+        self._os_list = vmmOSList()
+        self.widget("details-os-align").add(self._os_list.search_entry)
+        self.widget("details-os-label").set_mnemonic_widget(
+                self._os_list.search_entry)
+        self._os_list.connect("os-selected", self._os_list_name_selected_cb)
+
         apps_list = self.widget("inspection-apps")
         apps_model = Gtk.ListStore(str, str, str)
         apps_list.set_model(apps_model)
@@ -984,7 +1015,8 @@ class vmmDetails(vmmGObjectUI):
         cpu_model.set_entry_text_column(0)
         cpu_model.set_row_separator_func(sep_func, None)
         model.set_sort_column_id(1, Gtk.SortType.ASCENDING)
-        model.append([_("Application Default"), "1", "appdefault", False])
+        model.append([_("Application Default"), "1",
+            virtinst.DomainCpu.SPECIAL_MODE_APP_DEFAULT, False])
         model.append([_("Hypervisor Default"), "2",
             virtinst.DomainCpu.SPECIAL_MODE_HV_DEFAULT, False])
         model.append([_("Clear CPU configuration"), "3",
@@ -993,23 +1025,21 @@ class vmmDetails(vmmGObjectUI):
         for name in caps.get_cpu_values(self.vm.get_arch()):
             model.append([name, name, name, False])
 
-        # Remove button tooltip
-        self.widget("config-remove").set_tooltip_text(_remove_tooltip)
-
         # Disk cache combo
         disk_cache = self.widget("disk-cache")
         vmmAddHardware.build_disk_cache_combo(self.vm, disk_cache)
 
         # Disk io combo
-        combo = self.widget("disk-io")
-        model = Gtk.ListStore(str, str)
-        combo.set_model(model)
-        uiutil.init_combo_text_column(combo, 1)
-        model.set_sort_column_id(0, Gtk.SortType.ASCENDING)
-        model.append([None, _("Hypervisor default")])
-        for m in virtinst.DeviceDisk.io_modes:
-            model.append([m, m])
-        combo.set_active(0)
+        disk_io = self.widget("disk-io")
+        vmmAddHardware.build_disk_io_combo(self.vm, disk_io)
+
+        # Discard combo
+        combo = self.widget("disk-discard")
+        vmmAddHardware.build_disk_discard_combo(self.vm, combo)
+
+        # Detect zeroes combo
+        combo = self.widget("disk-detect-zeroes")
+        vmmAddHardware.build_disk_detect_zeroes_combo(self.vm, combo)
 
         # Disk bus combo
         disk_bus = self.widget("disk-bus")
@@ -1044,6 +1074,10 @@ class vmmDetails(vmmGObjectUI):
         sc_mode = self.widget("smartcard-mode")
         vmmAddHardware.build_smartcard_mode_combo(self.vm, sc_mode)
 
+        # TPM model
+        tpm_model = self.widget("tpm-model")
+        vmmAddHardware.build_tpm_model_combo(self.vm, tpm_model, None)
+
         # Controller model
         combo = self.widget("controller-model")
         model = Gtk.ListStore(str, str)
@@ -1076,7 +1110,7 @@ class vmmDetails(vmmGObjectUI):
         if event.button != 3:
             return
 
-        devobj = self.get_hw_selection(HW_LIST_COL_DEVICE)
+        devobj = self.get_hw_row()[HW_LIST_COL_DEVICE]
         if not devobj:
             return
 
@@ -1123,23 +1157,6 @@ class vmmDetails(vmmGObjectUI):
     def get_hw_row(self):
         return uiutil.get_list_selected_row(self.widget("hw-list"))
 
-    def get_hw_selection(self, field):
-        row = self.get_hw_row()
-        if not row:
-            return None
-        return row[field]
-
-    def force_get_hw_pagetype(self, page=None):
-        if page:
-            return page
-
-        page = self.get_hw_selection(HW_LIST_COL_TYPE)
-        if page is None:
-            page = HW_LIST_TYPE_GENERAL
-            self.set_hw_selection(0)
-
-        return page
-
     def has_unapplied_changes(self, row):
         if not row:
             return False
@@ -1183,18 +1200,25 @@ class vmmDetails(vmmGObjectUI):
             self.oldhwkey = newrow[HW_LIST_COL_DEVICE]
             self.hw_selected()
 
-    def hw_selected(self, page=None):
-        pagetype = self.force_get_hw_pagetype(page)
+    def _disable_device_remove(self, tooltip):
+        self.widget("config-remove").set_sensitive(False)
+        self.widget("config-remove").set_tooltip_text(tooltip)
+
+    def hw_selected(self, pagetype=None):
+        if pagetype is None:
+            pagetype = self.get_hw_row()[HW_LIST_COL_TYPE]
 
         self.widget("config-remove").set_sensitive(True)
-        self.widget("hw-panel").set_sensitive(True)
-        self.widget("hw-panel").show()
+        self.widget("config-remove").set_tooltip_text(
+                _("Remove this device from the virtual machine"))
 
         try:
+            dev = self.get_hw_row()[HW_LIST_COL_DEVICE]
+
             if pagetype == HW_LIST_TYPE_GENERAL:
                 self.refresh_overview_page()
-            elif pagetype == HW_LIST_TYPE_INSPECTION:
-                self.refresh_inspection_page()
+            elif pagetype == HW_LIST_TYPE_OS:
+                self.refresh_os_page()
             elif pagetype == HW_LIST_TYPE_STATS:
                 self.refresh_stats_page()
             elif pagetype == HW_LIST_TYPE_CPU:
@@ -1204,37 +1228,37 @@ class vmmDetails(vmmGObjectUI):
             elif pagetype == HW_LIST_TYPE_BOOT:
                 self.refresh_boot_page()
             elif pagetype == HW_LIST_TYPE_DISK:
-                self.refresh_disk_page()
+                self.refresh_disk_page(dev)
             elif pagetype == HW_LIST_TYPE_NIC:
-                self.refresh_network_page()
+                self.refresh_network_page(dev)
             elif pagetype == HW_LIST_TYPE_INPUT:
-                self.refresh_input_page()
+                self.refresh_input_page(dev)
             elif pagetype == HW_LIST_TYPE_GRAPHICS:
-                self.refresh_graphics_page()
+                self.refresh_graphics_page(dev)
             elif pagetype == HW_LIST_TYPE_SOUND:
-                self.refresh_sound_page()
+                self.refresh_sound_page(dev)
             elif pagetype == HW_LIST_TYPE_CHAR:
-                self.refresh_char_page()
+                self.refresh_char_page(dev)
             elif pagetype == HW_LIST_TYPE_HOSTDEV:
-                self.refresh_hostdev_page()
+                self.refresh_hostdev_page(dev)
             elif pagetype == HW_LIST_TYPE_VIDEO:
-                self.refresh_video_page()
+                self.refresh_video_page(dev)
             elif pagetype == HW_LIST_TYPE_WATCHDOG:
-                self.refresh_watchdog_page()
+                self.refresh_watchdog_page(dev)
             elif pagetype == HW_LIST_TYPE_CONTROLLER:
-                self.refresh_controller_page()
+                self.refresh_controller_page(dev)
             elif pagetype == HW_LIST_TYPE_FILESYSTEM:
-                self.refresh_filesystem_page()
+                self.refresh_filesystem_page(dev)
             elif pagetype == HW_LIST_TYPE_SMARTCARD:
-                self.refresh_smartcard_page()
+                self.refresh_smartcard_page(dev)
             elif pagetype == HW_LIST_TYPE_REDIRDEV:
-                self.refresh_redir_page()
+                self.refresh_redir_page(dev)
             elif pagetype == HW_LIST_TYPE_TPM:
-                self.refresh_tpm_page()
+                self.refresh_tpm_page(dev)
             elif pagetype == HW_LIST_TYPE_RNG:
-                self.refresh_rng_page()
+                self.refresh_rng_page(dev)
             elif pagetype == HW_LIST_TYPE_PANIC:
-                self.refresh_panic_page()
+                self.refresh_panic_page(dev)
             else:
                 pagetype = -1
         except Exception as e:
@@ -1434,9 +1458,7 @@ class vmmDetails(vmmGObjectUI):
                                str(e)))
 
     def remove_xml_dev(self, src_ignore):
-        devobj = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not devobj:
-            return
+        devobj = self.get_hw_row()[HW_LIST_COL_DEVICE]
         self.remove_device(devobj)
 
     def set_pause_state(self, state):
@@ -1562,12 +1584,11 @@ class vmmDetails(vmmGObjectUI):
             if text == row[0]:
                 key = row[2]
                 break
-
         if not key:
             return text
 
-        if key == "appdefault":
-            return self.config.get_default_cpu_setting(for_cpu=True)
+        if key == virtinst.DomainCpu.SPECIAL_MODE_APP_DEFAULT:
+            return self.config.get_default_cpu_setting()
         return key
 
     def inspection_refresh(self, _src):
@@ -1576,16 +1597,19 @@ class vmmDetails(vmmGObjectUI):
         if inspection:
             inspection.vm_refresh(self.vm)
 
+    def _os_list_name_selected_cb(self, src, osobj):
+        self.enable_apply(EDIT_OS_NAME)
+
 
     ##############################
     # Details/Hardware listeners #
     ##############################
 
-    def _browse_file(self, callback, is_media=False):
-        if is_media:
-            reason = self.config.CONFIG_DIR_ISO_MEDIA
-        else:
+    def _browse_file(self, callback, is_media=False, reason=None):
+        if not reason:
             reason = self.config.CONFIG_DIR_IMAGE
+            if is_media:
+                reason = self.config.CONFIG_DIR_ISO_MEDIA
 
         if self.storage_browser is None:
             self.storage_browser = vmmStorageBrowser(self.conn)
@@ -1804,53 +1828,38 @@ class vmmDetails(vmmGObjectUI):
         boot_list.get_selection().emit("changed")
         self.enable_apply(EDIT_BOOTORDER)
 
+
+    # Disk callbacks
     def disk_format_changed(self, ignore):
         self.widget("disk-format-warn").show()
         self.enable_apply(EDIT_DISK_FORMAT)
 
+    def _disk_source_browse_clicked_cb(self, src):
+        disk = self.get_hw_row()[HW_LIST_COL_DEVICE]
+        if disk.is_floppy():
+            reason = self.config.CONFIG_DIR_FLOPPY_MEDIA
+        else:
+            reason = self.config.CONFIG_DIR_ISO_MEDIA
 
-    # CDROM Eject/Connect
-    def _change_storage_media(self, devobj, newpath):
-        kwargs = {"path": newpath}
-        return vmmAddHardware.change_config_helper(self.vm.define_disk,
-            kwargs, self.vm, self.err, devobj=devobj)
+        def cb(ignore, path):
+            self._mediacombo.set_path(path)
+        self._browse_file(cb, reason=reason)
 
-    def _eject_media(self, disk):
-        try:
-            self._change_storage_media(disk, None)
-        except Exception as e:
-            self.err.show_err((_("Error disconnecting media: %s") % e))
 
-    def _insert_media(self, disk):
-        try:
-            devtype = disk.device
+    # Net IP refresh
+    def _set_network_ip_details(self, net):
+        ipv4, ipv6 = self.vm.get_interface_addresses(net)
+        label = ipv4 or ""
+        if ipv6:
+            if label:
+                label += "\n"
+            label += ipv6
+        self.widget("network-ip").set_text(label or _("Unknown"))
 
-            def change_cdrom_wrapper(src_ignore, devobj, newpath):
-                return self._change_storage_media(devobj, newpath)
-
-            # Launch 'Choose CD' dialog
-            if self.media_choosers[devtype] is None:
-                ret = vmmChooseCD(self.vm, disk)
-
-                ret.connect("cdrom-chosen", change_cdrom_wrapper)
-                self.media_choosers[devtype] = ret
-
-            dialog = self.media_choosers[devtype]
-            dialog.disk = disk
-
-            dialog.show(self.topwin)
-        except Exception as e:
-            self.err.show_err((_("Error launching media dialog: %s") % e))
-            return
-
-    def toggle_storage_media(self, src_ignore):
-        disk = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not disk:
-            return
-
-        if disk.path:
-            return self._eject_media(disk)
-        return self._insert_media(disk)
+    def refresh_ip(self, src_ignore):
+        net = self.get_hw_row()[HW_LIST_COL_DEVICE]
+        self.vm.refresh_interface_addresses(net)
+        self._set_network_ip_details(net)
 
 
     ##################################################
@@ -1877,6 +1886,8 @@ class vmmDetails(vmmGObjectUI):
         try:
             if pagetype is HW_LIST_TYPE_GENERAL:
                 ret = self.config_overview_apply()
+            elif pagetype is HW_LIST_TYPE_OS:
+                ret = self.config_os_apply()
             elif pagetype is HW_LIST_TYPE_CPU:
                 ret = self.config_vcpus_apply()
             elif pagetype is HW_LIST_TYPE_MEMORY:
@@ -1903,6 +1914,8 @@ class vmmDetails(vmmGObjectUI):
                 ret = self.config_filesystem_apply(key)
             elif pagetype is HW_LIST_TYPE_HOSTDEV:
                 ret = self.config_hostdev_apply(key)
+            elif pagetype is HW_LIST_TYPE_TPM:
+                ret = self.config_tpm_apply(key)
             else:
                 ret = False
         except Exception as e:
@@ -1977,6 +1990,16 @@ class vmmDetails(vmmGObjectUI):
         return vmmAddHardware.change_config_helper(self.vm.define_overview,
                                           kwargs, self.vm, self.err,
                                           hotplug_args=hotplug_args)
+
+    def config_os_apply(self):
+        kwargs = {}
+
+        if self.edited(EDIT_OS_NAME):
+            osobj = self._os_list.get_selected_os()
+            kwargs["os_name"] = osobj and osobj.name or "generic"
+
+        return vmmAddHardware.change_config_helper(self.vm.define_os,
+                                          kwargs, self.vm, self.err)
 
     def config_vcpus_apply(self):
         kwargs = {}
@@ -2079,6 +2102,21 @@ class vmmDetails(vmmGObjectUI):
     def config_disk_apply(self, devobj):
         kwargs = {}
 
+        if self.edited(EDIT_DISK_PATH):
+            path = self._mediacombo.get_path()
+
+            names = virtinst.DeviceDisk.path_in_use_by(devobj.conn, path)
+            if names:
+                res = self.err.yes_no(
+                        _('Disk "%s" is already in use by other guests %s') %
+                         (path, names),
+                        _("Do you really want to use the disk?"))
+                if not res:
+                    return False
+
+            vmmAddStorage.check_path_search(self, self.conn, path)
+            kwargs["path"] = path or None
+
         if self.edited(EDIT_DISK_RO):
             kwargs["readonly"] = self.widget("disk-readonly").get_active()
 
@@ -2096,6 +2134,14 @@ class vmmDetails(vmmGObjectUI):
         if self.edited(EDIT_DISK_IO):
             kwargs["io"] = uiutil.get_list_selection(self.widget("disk-io"))
 
+        if self.edited(EDIT_DISK_DISCARD):
+            kwargs["discard"] = uiutil.get_list_selection(
+                self.widget("disk-discard"))
+
+        if self.edited(EDIT_DISK_DETECT_ZEROES):
+            kwargs["detect_zeroes"] = uiutil.get_list_selection(
+                self.widget("disk-detect-zeroes"))
+
         if self.edited(EDIT_DISK_FORMAT):
             kwargs["driver_type"] = self.widget("disk-format").get_text()
 
@@ -2105,6 +2151,9 @@ class vmmDetails(vmmGObjectUI):
         if self.edited(EDIT_DISK_SGIO):
             sgio = uiutil.get_list_selection(self.widget("disk-sgio"))
             kwargs["sgio"] = sgio
+
+        if self.edited(EDIT_DISK_PR):
+            kwargs["managed_pr"] = self.widget("disk-pr-checkbox").get_active()
 
         if self.edited(EDIT_DISK_BUS):
             bus = uiutil.get_list_selection(self.widget("disk-bus"))
@@ -2164,6 +2213,9 @@ class vmmDetails(vmmGObjectUI):
 
         if self.edited(EDIT_NET_MAC):
             kwargs["macaddr"] = self.widget("network-mac-entry").get_text()
+
+        if self.edited(EDIT_NET_LINKSTATE):
+            kwargs["linkstate"] = self.widget("network-link-state-checkbox").get_active()
 
         return vmmAddHardware.change_config_helper(self.vm.define_network,
                                           kwargs, self.vm, self.err,
@@ -2261,6 +2313,17 @@ class vmmDetails(vmmGObjectUI):
                                           kwargs, self.vm, self.err,
                                           devobj=devobj)
 
+    def config_tpm_apply(self, devobj):
+        kwargs = {}
+
+        if self.edited(EDIT_TPM_MODEL):
+            model = uiutil.get_list_selection(self.widget("tpm-model"))
+            kwargs["model"] = model
+
+        return vmmAddHardware.change_config_helper(self.vm.define_tpm,
+                                          kwargs, self.vm, self.err,
+                                          devobj=devobj)
+
 
     # Device removal
     def remove_device(self, devobj):
@@ -2321,7 +2384,7 @@ class vmmDetails(vmmGObjectUI):
 
         # Stats page needs to be refreshed every tick
         if (page == DETAILS_PAGE_DETAILS and
-            self.get_hw_selection(HW_LIST_COL_TYPE) == HW_LIST_TYPE_STATS):
+            self.get_hw_row()[HW_LIST_COL_TYPE] == HW_LIST_TYPE_STATS):
             self.refresh_stats_page()
 
     def page_refresh(self, page):
@@ -2329,13 +2392,13 @@ class vmmDetails(vmmGObjectUI):
             return
 
         # This function should only be called when the VM xml actually
-        # changes (not everytime it is refreshed). This saves us from blindly
+        # changes (not every time it is refreshed). This saves us from blindly
         # parsing the xml every tick
 
         # Add / remove new devices
         self.repopulate_hw_list()
 
-        pagetype = self.get_hw_selection(HW_LIST_COL_TYPE)
+        pagetype = self.get_hw_row()[HW_LIST_COL_TYPE]
         if pagetype is None:
             return
 
@@ -2344,7 +2407,7 @@ class vmmDetails(vmmGObjectUI):
             # erase them
             return
 
-        self.hw_selected(page=pagetype)
+        self.hw_selected(pagetype=pagetype)
 
     def refresh_overview_page(self):
         # Basic details
@@ -2355,7 +2418,6 @@ class vmmDetails(vmmGObjectUI):
         desc_widget.get_buffer().set_text(desc)
 
         title = self.vm.get_title()
-        self.widget("overview-title").set_sensitive(self.vm.title_supported)
         self.widget("overview-title").set_text(title or "")
 
         # Hypervisor Details
@@ -2411,7 +2473,9 @@ class vmmDetails(vmmGObjectUI):
                 IdMap_proper = getattr(IdMap, name.replace("-", "_"))
                 self.widget(name).set_value(int(IdMap_proper))
 
-    def refresh_inspection_page(self):
+    def refresh_os_page(self):
+        self._os_list.select_os(self.vm.xmlobj.osinfo)
+
         inspection_supported = self.config.inspection_supported()
         uiutil.set_grid_row_visible(self.widget("details-overview-error"),
                                     bool(self.vm.inspection.errorstr))
@@ -2420,24 +2484,11 @@ class vmmDetails(vmmGObjectUI):
                     self.vm.inspection.errorstr)
             inspection_supported = False
 
-        self.widget("details-inspection-os").set_visible(inspection_supported)
         self.widget("details-inspection-apps").set_visible(inspection_supported)
+        self.widget("details-inspection-refresh").set_visible(
+                inspection_supported)
         if not inspection_supported:
             return
-
-        # Operating System (ie. inspection data)
-        hostname = self.vm.inspection.hostname
-        if not hostname:
-            hostname = _("unknown")
-        self.widget("inspection-hostname").set_text(hostname)
-        os_type = self.vm.inspection.os_type
-        if not os_type:
-            os_type = "unknown"
-        self.widget("inspection-type").set_text(_label_for_os_type(os_type))
-        product_name = self.vm.inspection.product_name
-        if not product_name:
-            product_name = _("unknown")
-        self.widget("inspection-product-name").set_text(product_name)
 
         # Applications (also inspection data)
         apps = self.vm.inspection.applications or []
@@ -2475,13 +2526,13 @@ class vmmDetails(vmmGObjectUI):
             return ('<span color="#82003B">%s</span> '
                     '<span color="#295C45">%s</span>' % (text1, text2))
         def _dsk_rx_tx_text(rx, tx, unit):
-            opts = {"received": rx, "transfered": tx, "units": unit}
+            opts = {"received": rx, "transferred": tx, "units": unit}
             return _multi_color(_("%(received)d %(units)s read") % opts,
-                                _("%(transfered)d %(units)s write") % opts)
+                                _("%(transferred)d %(units)s write") % opts)
         def _net_rx_tx_text(rx, tx, unit):
-            opts = {"received": rx, "transfered": tx, "units": unit}
+            opts = {"received": rx, "transferred": tx, "units": unit}
             return _multi_color(_("%(received)d %(units)s in") % opts,
-                                _("%(transfered)d %(units)s out") % opts)
+                                _("%(transferred)d %(units)s out") % opts)
 
         cpu_txt = _("Disabled")
         mem_txt = _("Disabled")
@@ -2603,11 +2654,7 @@ class vmmDetails(vmmGObjectUI):
         model.append(["filtered", "filtered"])
         model.append(["unfiltered", "unfiltered"])
 
-    def refresh_disk_page(self):
-        disk = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not disk:
-            return
-
+    def refresh_disk_page(self, disk):
         path = disk.path
         devtype = disk.device
         ro = disk.read_only
@@ -2616,6 +2663,8 @@ class vmmDetails(vmmGObjectUI):
         removable = disk.removable
         cache = disk.driver_cache
         io = disk.driver_io
+        discard = disk.driver_discard
+        detect_zeroes = disk.driver_detect_zeroes
         driver_type = disk.driver_type or ""
         serial = disk.serial
 
@@ -2626,8 +2675,6 @@ class vmmDetails(vmmGObjectUI):
             if vol:
                 size = vol.get_pretty_capacity()
 
-        is_cdrom = (devtype == virtinst.DeviceDisk.DEVICE_CDROM)
-        is_floppy = (devtype == virtinst.DeviceDisk.DEVICE_FLOPPY)
         is_usb = (bus == "usb")
 
         can_set_removable = (is_usb and (self.conn.is_qemu() or
@@ -2639,11 +2686,10 @@ class vmmDetails(vmmGObjectUI):
 
         pretty_name = _label_for_device(disk)
 
-        self.widget("disk-source-path").set_text(path or "-")
         self.widget("disk-target-type").set_text(pretty_name)
 
         self.widget("disk-readonly").set_active(ro)
-        self.widget("disk-readonly").set_sensitive(not is_cdrom)
+        self.widget("disk-readonly").set_sensitive(not disk.is_cdrom())
         self.widget("disk-shareable").set_active(share)
         self.widget("disk-removable").set_active(removable)
         uiutil.set_grid_row_visible(self.widget("disk-removable"),
@@ -2651,13 +2697,19 @@ class vmmDetails(vmmGObjectUI):
 
         is_lun = disk.device == virtinst.DeviceDisk.DEVICE_LUN
         uiutil.set_grid_row_visible(self.widget("disk-sgio"), is_lun)
+        uiutil.set_grid_row_visible(self.widget("disk-pr-checkbox"), is_lun)
         if is_lun:
             self.build_disk_sgio(self.vm, self.widget("disk-sgio"))
             uiutil.set_list_selection(self.widget("disk-sgio"), disk.sgio)
+            managed = disk.reservations_managed == "yes"
+            self.widget("disk-pr-checkbox").set_active(managed)
 
         self.widget("disk-size").set_text(size)
         uiutil.set_list_selection(self.widget("disk-cache"), cache)
         uiutil.set_list_selection(self.widget("disk-io"), io)
+        uiutil.set_list_selection(self.widget("disk-discard"), discard)
+        uiutil.set_list_selection(self.widget("disk-detect-zeroes"),
+                                  detect_zeroes)
 
         self.widget("disk-format").set_text(driver_type)
         self.widget("disk-format-warn").hide()
@@ -2667,22 +2719,16 @@ class vmmDetails(vmmGObjectUI):
         uiutil.set_list_selection(self.widget("disk-bus"), bus)
         self.widget("disk-serial").set_text(serial or "")
 
-        button = self.widget("disk-cdrom-connect")
-        if is_cdrom or is_floppy:
-            if not path:
-                # source device not connected
-                button.set_label(Gtk.STOCK_CONNECT)
-            else:
-                button.set_label(Gtk.STOCK_DISCONNECT)
-            button.show()
-        else:
-            button.hide()
+        is_removable = disk.is_cdrom() or disk.is_floppy()
+        self.widget("disk-source-box").set_visible(is_removable)
+        self.widget("disk-source-label").set_visible(not is_removable)
 
-    def refresh_network_page(self):
-        net = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not net:
-            return
+        self.widget("disk-source-label").set_text(path or "-")
+        if is_removable:
+            self._mediacombo.reset_state(is_floppy=disk.is_floppy())
+            self._mediacombo.set_path(path or "")
 
+    def refresh_network_page(self, net):
         vmmAddHardware.populate_network_model_combo(
             self.vm, self.widget("network-model"))
         uiutil.set_list_selection(self.widget("network-model"), net.model)
@@ -2693,13 +2739,13 @@ class vmmDetails(vmmGObjectUI):
         else:
             self.widget("network-mac-entry").set_text(macaddr)
 
+        state = net.link_state == "up" or net.link_state is None
+        self.widget("network-link-state-checkbox").set_active(state)
+        self._set_network_ip_details(net)
+
         self.netlist.set_dev(net)
 
-    def refresh_input_page(self):
-        inp = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not inp:
-            return
-
+    def refresh_input_page(self, inp):
         dev = inp.pretty_name(inp.type, inp.bus)
 
         mode = None
@@ -2712,43 +2758,22 @@ class vmmDetails(vmmGObjectUI):
         self.widget("input-dev-mode").set_text(mode or "")
         uiutil.set_grid_row_visible(self.widget("input-dev-mode"), bool(mode))
 
-        tooltip = _remove_tooltip
-        sensitive = True
         if ((inp.type == "mouse" and inp.bus in ("xen", "ps2")) or
             (inp.type == "keyboard" and inp.bus in ("xen", "ps2"))):
-            sensitive = False
-            tooltip = _("Hypervisor does not support removing this device")
+            self._disable_device_remove(
+                _("Hypervisor does not support removing this device"))
 
-        self.widget("config-remove").set_sensitive(sensitive)
-        self.widget("config-remove").set_tooltip_text(tooltip)
-
-    def refresh_graphics_page(self):
-        gfx = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not gfx:
-            return
-
+    def refresh_graphics_page(self, gfx):
         title = self.gfxdetails.set_dev(gfx)
         self.widget("graphics-title").set_markup("<b>%s</b>" % title)
 
-    def refresh_sound_page(self):
-        sound = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not sound:
-            return
-
+    def refresh_sound_page(self, sound):
         uiutil.set_list_selection(self.widget("sound-model"), sound.model)
 
-    def refresh_smartcard_page(self):
-        sc = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not sc:
-            return
-
+    def refresh_smartcard_page(self, sc):
         uiutil.set_list_selection(self.widget("smartcard-mode"), sc.mode)
 
-    def refresh_redir_page(self):
-        rd = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not rd:
-            return
-
+    def refresh_redir_page(self, rd):
         address = None
         if rd.type == 'tcp':
             address = _("%s:%s") % (rd.host, rd.service)
@@ -2760,11 +2785,7 @@ class vmmDetails(vmmGObjectUI):
         uiutil.set_grid_row_visible(
             self.widget("redir-address"), bool(address))
 
-    def refresh_tpm_page(self):
-        tpmdev = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not tpmdev:
-            return
-
+    def refresh_tpm_page(self, tpmdev):
         def show_ui(param, val=None):
             widgetname = "tpm-" + param.replace("_", "-")
             doshow = tpmdev.supports_property(param)
@@ -2779,73 +2800,27 @@ class vmmDetails(vmmGObjectUI):
         self.widget("tpm-dev-type").set_text(
                 virtinst.DeviceTpm.get_pretty_type(dev_type))
 
+        vmmAddHardware.populate_tpm_model_combo(
+            self.vm, self.widget("tpm-model"), tpmdev.version)
+        uiutil.set_list_selection(self.widget("tpm-model"), tpmdev.model)
+
         # Device type specific properties, only show if apply to the cur dev
         show_ui("device_path")
+        show_ui("version")
 
-    def refresh_panic_page(self):
-        dev = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not dev:
-            return
-
+    def refresh_panic_page(self, dev):
         model = dev.model or "isa"
         pmodel = virtinst.DevicePanic.get_pretty_model(model)
         self.widget("panic-model").set_text(pmodel)
 
-    def refresh_rng_page(self):
-        dev = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        values = {
-            "rng-bind-host": "bind_host",
-            "rng-bind-service": "bind_service",
-            "rng-connect-host": "connect_host",
-            "rng-connect-service": "connect_service",
-            "rng-type": "type",
-            "rng-device": "device",
-            "rng-backend-type": "backend_type",
-            "rng-rate-bytes": "rate_bytes",
-            "rng-rate-period": "rate_period"
-        }
-        rewriter = {
-            "rng-type": lambda x:
-            DeviceRng.get_pretty_type(x),
-            "rng-backend-type": lambda x:
-            DeviceRng.get_pretty_backend_type(x),
-        }
+    def refresh_rng_page(self, dev):
+        is_random = dev.type == "random"
+        uiutil.set_grid_row_visible(self.widget("rng-device"), is_random)
 
-        def set_visible(widget, v):
-            uiutil.set_grid_row_visible(self.widget(widget), v)
+        self.widget("rng-type").set_text(dev.get_pretty_type(dev.type))
+        self.widget("rng-device").set_text(dev.device or "")
 
-        is_egd = dev.type == DeviceRng.TYPE_EGD
-        udp = dev.backend_type == DeviceRng.BACKEND_TYPE_UDP
-        bind = DeviceRng.BACKEND_MODE_BIND in dev.backend_mode()
-
-        set_visible("rng-device", not is_egd)
-        set_visible("rng-mode", is_egd and not udp)
-        set_visible("rng-backend-type", is_egd)
-        set_visible("rng-connect-host", is_egd and (udp or not bind))
-        set_visible("rng-connect-service", is_egd and (udp or not bind))
-        set_visible("rng-bind-host", is_egd and (udp or bind))
-        set_visible("rng-bind-service", is_egd and (udp or bind))
-
-        for k, prop in values.items():
-            val = "-"
-            if dev.supports_property(prop):
-                val = getattr(dev, prop) or "-"
-                r = rewriter.get(k)
-                if r:
-                    val = r(val)
-            self.widget(k).set_text(val)
-            if "rate" in k:
-                uiutil.set_grid_row_visible(self.widget(k), val != "-")
-
-        if is_egd and not udp:
-            mode = DeviceRng.get_pretty_mode(dev.backend_mode()[0])
-            self.widget("rng-mode").set_text(mode)
-
-    def refresh_char_page(self):
-        chardev = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not chardev:
-            return
-
+    def refresh_char_page(self, chardev):
         show_target_type = not (chardev.DEVICE_TYPE in
                                 ["serial", "parallel"])
         show_target_name = chardev.DEVICE_TYPE == "channel"
@@ -2914,12 +2889,9 @@ class vmmDetails(vmmGObjectUI):
         show_ui("source_path")
         show_ui("target_type")
         show_ui("target_name")
+        show_ui("target_state")
 
-    def refresh_hostdev_page(self):
-        hostdev = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not hostdev:
-            return
-
+    def refresh_hostdev_page(self, hostdev):
         rom_bar = hostdev.rom_bar
         if rom_bar is None:
             rom_bar = True
@@ -2947,11 +2919,7 @@ class vmmDetails(vmmGObjectUI):
         self.widget("hostdev-source").set_text(pretty_name)
         self.widget("hostdev-rombar").set_active(rom_bar)
 
-    def refresh_video_page(self):
-        vid = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not vid:
-            return
-
+    def refresh_video_page(self, vid):
         model = vid.model
         if model == "qxl" and vid.vgamem:
             ram = vid.vgamem
@@ -2973,43 +2941,51 @@ class vmmDetails(vmmGObjectUI):
         else:
             self.widget("video-3d").set_active(vid.accel3d)
 
-    def refresh_watchdog_page(self):
-        watch = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not watch:
-            return
+        if self.vm.xmlobj.devices.graphics:
+            self._disable_device_remove(
+                _("Cannot remove device while Graphics/Display is attached."))
 
+    def refresh_watchdog_page(self, watch):
         model = watch.model
         action = watch.action
 
         uiutil.set_list_selection(self.widget("watchdog-model"), model)
         uiutil.set_list_selection(self.widget("watchdog-action"), action)
 
-    def refresh_controller_page(self):
-        controller = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not controller:
-            return
-
+    def refresh_controller_page(self, controller):
         uiutil.set_grid_row_visible(self.widget("device-list-label"), False)
         uiutil.set_grid_row_visible(self.widget("controller-device-box"), False)
 
-        can_remove = True
         if self.vm.get_xmlobj().os.is_x86() and controller.type == "usb":
-            can_remove = False
+            self._disable_device_remove(
+                _("Hypervisor does not support removing this device"))
         if controller.type == "pci":
-            can_remove = False
-        if controller.type == "scsi":
+            self._disable_device_remove(
+                _("Hypervisor does not support removing this device"))
+        elif controller.type in ["scsi", "sata", "ide", "fdc"]:
             model = self.widget("controller-device-list").get_model()
             model.clear()
             for disk in _calculate_disk_bus_index(self.vm.xmlobj.devices.disk):
                 if disk.address.compare_controller(controller, disk.bus):
-                    can_remove = False
                     name = _label_for_device(disk)
                     infoStr = ("%s on %s" % (name, disk.address.pretty_desc()))
                     model.append([infoStr])
+                    self._disable_device_remove(
+                        _("Cannot remove controller while devices are attached."))
             uiutil.set_grid_row_visible(self.widget("device-list-label"), True)
             uiutil.set_grid_row_visible(self.widget("controller-device-box"), True)
-
-        self.widget("config-remove").set_sensitive(can_remove)
+        elif controller.type == "virtio-serial":
+            for dev in self.vm.xmlobj.devices.channel:
+                if dev.address.compare_controller(controller, dev.address.type):
+                    self._disable_device_remove(
+                        _("Cannot remove controller while devices are attached."))
+                    break
+            for dev in self.vm.xmlobj.devices.console:
+                # virtio console is implied to be on virtio-serial index=0
+                if controller.index == 0 and dev.target_type == "virtio":
+                    self._disable_device_remove(
+                        _("Cannot remove controller while devices are attached."))
+                    break
 
         type_label = controller.pretty_desc()
         self.widget("controller-type").set_text(type_label)
@@ -3020,14 +2996,13 @@ class vmmDetails(vmmGObjectUI):
         if controller.type == "pci":
             show_model = False
         uiutil.set_grid_row_visible(combo, show_model)
-        uiutil.set_list_selection(self.widget("controller-model"),
-            controller.model or None)
 
-    def refresh_filesystem_page(self):
-        dev = self.get_hw_selection(HW_LIST_COL_DEVICE)
-        if not dev:
-            return
+        model = controller.model
+        if controller.type == "usb" and "xhci" in str(model):
+            model = "usb3"
+        uiutil.set_list_selection(self.widget("controller-model"), model)
 
+    def refresh_filesystem_page(self, dev):
         self.fsDetails.set_dev(dev)
         self.fsDetails.update_fs_rows()
 
@@ -3113,10 +3088,8 @@ class vmmDetails(vmmGObjectUI):
                                   page_id, title])
 
         add_hw_list_option(_("Overview"), HW_LIST_TYPE_GENERAL, "computer")
+        add_hw_list_option(_("OS information"), HW_LIST_TYPE_OS, "computer")
         if not self.is_customize_dialog:
-            if self.config.inspection_supported():
-                add_hw_list_option(_("OS information"),
-                    HW_LIST_TYPE_INSPECTION, "computer")
             add_hw_list_option(_("Performance"), HW_LIST_TYPE_STATS,
                                "utilities-system-monitor")
         add_hw_list_option(_("CPUs"), HW_LIST_TYPE_CPU, "device_cpu")
@@ -3124,6 +3097,7 @@ class vmmDetails(vmmGObjectUI):
         add_hw_list_option(_("Boot Options"), HW_LIST_TYPE_BOOT, "system-run")
 
         self.repopulate_hw_list()
+        self.set_hw_selection(0)
 
     def repopulate_hw_list(self):
         hw_list = self.widget("hw-list")

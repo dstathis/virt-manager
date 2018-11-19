@@ -10,17 +10,41 @@
 import datetime
 import logging
 import re
-import time
 
 import gi
 gi.require_version('Libosinfo', '1.0')
 from gi.repository import Libosinfo as libosinfo
-from gi.repository import GLib
 
 
 ###################
 # Sorting helpers #
 ###################
+
+def _sortby(osobj):
+    """
+    Combines distro+version to make a more sort friendly string. Examples
+
+    fedora25    -> fedora-0025000000000000
+    ubuntu17.04 -> ubuntu-0017000400000000
+    win2k8r2    -> win-0006000100000000
+    """
+    if osobj.is_generic():
+        # Sort generic at the end of the list
+        return "zzzzzz-000000000000"
+
+    version = osobj.version
+    try:
+        t = version.split(".")
+        t = t[:min(4, len(t))] + [0] * (4 - min(4, len(t)))
+        new_version = ""
+        for n in t:
+            new_version = new_version + ("%.4i" % int(n))
+        version = new_version
+    except Exception:
+        pass
+
+    return "%s-%s" % (osobj.distro, version)
+
 
 def _sort(tosort):
     sortby_mappings = {}
@@ -30,14 +54,15 @@ def _sort(tosort):
     for key, osinfo in tosort.items():
         # Libosinfo has some duplicate version numbers here, so append .1
         # if there's a collision
-        sortby = osinfo.sortby
+        sortby = _sortby(osinfo)
         while sortby_mappings.get(sortby):
             sortby = sortby + ".1"
         sortby_mappings[sortby] = key
 
-        # Group distros by their urldistro value first, so debian is clumped
-        # together, and fedora, etc.
-        distro = osinfo.urldistro or "zzzzzzz"
+        # Group by distro first, so debian is clumped together, fedora, etc.
+        distro = osinfo.distro
+        if osinfo.is_generic():
+            distro = "zzzzzz"
         if distro not in distro_mappings:
             distro_mappings[distro] = []
         distro_mappings[distro].append(sortby)
@@ -161,8 +186,19 @@ class _OSDB(object):
     # Public APIs #
     ###############
 
+    def lookup_os_by_full_id(self, full_id):
+        for osobj in self._all_variants.values():
+            if osobj.full_id == full_id:
+                return osobj
+
     def lookup_os(self, key):
-        key = self._aliases.get(key) or key
+        if key in self._aliases:
+            alias = self._aliases[key]
+            # Added 2018-10-02. Maybe remove aliases in a year
+            logging.warning(
+                _("OS name '%s' is deprecated, using '%s' instead. "
+                  "This alias will be removed in the future."), key, alias)
+            key = alias
         return self._all_variants.get(key)
 
     def lookup_os_by_media(self, location):
@@ -179,11 +215,6 @@ class _OSDB(object):
                 location, osname)
 
         return osname
-
-    def list_types(self):
-        approved_types = ["linux", "windows", "bsd", "macos",
-            "solaris", "other", "generic"]
-        return approved_types
 
     def list_os(self):
         """
@@ -218,32 +249,17 @@ class _OsVariant(object):
         self._os = o
         self._family = self._os and self._os.get_family() or None
 
+        self.full_id = self._os and self._os.get_id() or None
         self.name = self._os and self._os.get_short_id() or "generic"
-        self.label = self._os and self._os.get_name() or "Generic"
+        self.label = self._os and self._os.get_name() or "Generic default"
         self.codename = self._os and self._os.get_codename() or ""
         self.distro = self._os and self._os.get_distro() or ""
-        self.eol = False
+        self.version = self._os and self._os.get_version() or None
 
-        eol = self._os and self._os.get_eol_date() or None
-        rel = self._os and self._os.get_release_date() or None
+        self.eol = self._get_eol()
 
-        # End of life if an EOL date is present and has past,
-        # or if the release date is present and was 5 years or more
-        if eol is not None:
-            now = GLib.Date()
-            now.set_time_t(time.time())
-            if eol.compare(now) < 0:
-                self.eol = True
-        elif rel is not None:
-            then = GLib.Date()
-            then.set_time_t(time.time())
-            then.subtract_years(5)
-            if rel.compare(then) < 0:
-                self.eol = True
-
-        self.sortby = self._get_sortby()
-        self.urldistro = self._get_urldistro()
-        self._supported = None
+    def __repr__(self):
+        return "<%s name=%s>" % (self.__class__.__name__, self.name)
 
 
     ########################
@@ -285,201 +301,127 @@ class _OsVariant(object):
 
         return False
 
+    def _get_all_devices(self):
+        if not self._os:
+            return []
+        devlist = self._os.get_all_devices()
+        return [devlist.get_nth(i) for i in range(devlist.get_length())]
+
+    def _device_filter(self, devids=None, cls=None):
+        ret = []
+        devids = devids or []
+        for dev in self._get_all_devices():
+            if devids and dev.get_id() not in devids:
+                continue
+            if cls and not re.match(cls, dev.get_class()):
+                continue
+            ret.append(dev.get_name())
+        return ret
+
 
     ###############
     # Cached APIs #
     ###############
 
-    def _get_sortby(self):
-        if not self._os:
-            return "1"
+    def _get_eol(self):
+        eol = self._os and self._os.get_eol_date() or None
+        rel = self._os and self._os.get_release_date() or None
 
-        version = self._os.get_version()
-        try:
-            t = version.split(".")
-            t = t[:min(4, len(t))] + [0] * (4 - min(4, len(t)))
-            new_version = ""
-            for n in t:
-                new_version = new_version + ("%.4i" % int(n))
-            version = new_version
-        except Exception:
-            pass
+        def _glib_to_datetime(glibdate):
+            date = "%s-%s" % (glibdate.get_year(), glibdate.get_day_of_year())
+            return datetime.datetime.strptime(date, "%Y-%j")
 
-        return "%s-%s" % (self.distro, version)
+        now = datetime.datetime.today()
+        if eol is not None:
+            return now > _glib_to_datetime(eol)
 
-    def _get_supported(self):
-        if not self._os:
-            return True
-
-        eol_date = self._os.get_eol_date_string()
-
-        if eol_date:
-            return (datetime.datetime.strptime(eol_date, "%Y-%m-%d") >
-                    datetime.datetime.now())
-
-        if self.name == "fedora-unknown":
-            return False
-
-        # As of libosinfo 2.11, many clearly EOL distros don't have an
-        # EOL date. So assume None == EOL, add some manual work arounds.
-        # We should fix this in a new libosinfo version, and then drop
-        # this hack
-        if self._is_related_to(["fedora24", "rhel7.0", "debian6",
-            "ubuntu13.04", "win8", "win2k12", "mageia5", "centos7.0"],
-            check_clones=False, check_derives=False):
-            return True
+        # If no EOL is present, assume EOL if release was > 5 years ago
+        if rel is not None:
+            rel5 = _glib_to_datetime(rel) + datetime.timedelta(days=365 * 5)
+            return now > rel5
         return False
-
-    def _get_urldistro(self):
-        if not self._os:
-            return None
-        urldistro = self.distro
-        remap = {
-            "opensuse": "suse",
-            "sles": "suse",
-            "mes": "mandriva"
-        }
-
-        if remap.get(urldistro):
-            return remap[urldistro]
-
-        return urldistro
 
 
     ###############
     # Public APIs #
     ###############
 
-    def get_supported(self):
-        if self._supported is None:
-            self._supported = self._get_supported()
-        return self._supported
-
-    def get_typename(self):
-        """
-        Streamline the family name for use in the virt-manager UI
-        """
-        if not self._os:
-            return "generic"
-
-        if self._family in ['linux']:
-            return "linux"
-
-        if self._family in ['win9x', 'winnt', 'win16']:
-            return "windows"
-
-        if self._family in ['solaris']:
-            return "solaris"
-
-        if self._family in ['openbsd', 'freebsd', 'netbsd']:
-            return "bsd"
-
-        if self._family in ['darwin']:
-            return "macos"
-
-        return "other"
+    def is_generic(self):
+        return self._os is None
 
     def is_windows(self):
-        return self.get_typename() == "windows"
-
-    def need_old_xen_disable_acpi(self):
-        return self._is_related_to(["winxp", "win2k"], check_upgrades=False)
+        return self._family in ['win9x', 'winnt', 'win16']
 
     def broken_x2apic(self):
         # x2apic breaks networking in solaris10
         # https://bugs.launchpad.net/bugs/1395217
         return self.name in ('solaris10', 'solaris11')
 
+    def broken_uefi_with_hyperv(self):
+        # Some windows versions are broken with hyperv enlightenments + UEFI
+        # https://bugzilla.redhat.com/show_bug.cgi?id=1185253
+        # https://bugs.launchpad.net/qemu/+bug/1593605
+        return self.name in ("win2k8r2", "win7")
+
     def get_clock(self):
         if self.is_windows() or self._family in ['solaris']:
             return "localtime"
         return "utc"
 
-    def supports_virtiommio(self):
-        return self._is_related_to(["fedora19"])
-
-    def default_netmodel(self):
-        """
-        Default non-virtio net-model, since we check for that separately
-        """
-        if not self._os:
-            return None
-
-        fltr = libosinfo.Filter()
-        fltr.add_constraint("class", "net")
-        devs = self._os.get_all_devices(fltr)
-        for idx in range(devs.get_length()):
-            devname = devs.get_nth(idx).get_name()
-            if devname in ["pcnet", "ne2k_pci", "rtl8139", "e1000"]:
-                return devname
-        return None
+    def supported_netmodels(self):
+        return self._device_filter(cls="net")
 
     def supports_usbtablet(self):
+        # If no OS specified, still default to tablet
         if not self._os:
-            return False
+            return True
 
-        fltr = libosinfo.Filter()
-        fltr.add_constraint("class", "input")
-        fltr.add_constraint("name", "tablet")
-        devs = self._os.get_all_devices(fltr)
-        for idx in range(devs.get_length()):
-            if devs.get_nth(idx).get_bus_type() == "usb":
-                return True
-        return False
+        devids = ["http://usb.org/usb/80ee/0021"]
+        return bool(self._device_filter(devids=devids))
 
     def supports_virtiodisk(self):
-        if self._os:
-            fltr = libosinfo.Filter()
-            fltr.add_constraint("class", "block")
-            devs = self._os.get_all_devices(fltr)
-            for dev in range(devs.get_length()):
-                d = devs.get_nth(dev)
-                if d.get_name() == "virtio-block":
-                    return True
-
-        return False
+        # virtio-block and virtio1.0-block
+        devids = ["http://pcisig.com/pci/1af4/1001",
+                  "http://pcisig.com/pci/1af4/1042"]
+        return bool(self._device_filter(devids=devids))
 
     def supports_virtionet(self):
-        if self._os:
-            fltr = libosinfo.Filter()
-            fltr.add_constraint("class", "net")
-            devs = self._os.get_all_devices(fltr)
-            for dev in range(devs.get_length()):
-                d = devs.get_nth(dev)
-                if d.get_name() == "virtio-net":
-                    return True
-
-        return False
+        # virtio-net and virtio1.0-net
+        devids = ["http://pcisig.com/pci/1af4/1000",
+                  "http://pcisig.com/pci/1af4/1041"]
+        return bool(self._device_filter(devids=devids))
 
     def supports_virtiorng(self):
-        if self._os:
-            fltr = libosinfo.Filter()
-            fltr.add_constraint("class", "rng")
-            devs = self._os.get_all_devices(fltr)
-            for dev in range(devs.get_length()):
-                d = devs.get_nth(dev)
-                if d.get_name() == "virtio-rng":
-                    return True
+        # virtio-rng and virtio1.0-rng
+        devids = ["http://pcisig.com/pci/1af4/1005",
+                  "http://pcisig.com/pci/1af4/1044"]
+        return bool(self._device_filter(devids=devids))
 
-        return False
+    def supports_virtioserial(self):
+        devids = ["http://pcisig.com/pci/1af4/1003",
+                  "http://pcisig.com/pci/1af4/1043"]
+        if self._device_filter(devids=devids):
+            return True
+        # osinfo data was wrong for RHEL/centos here until Oct 2018
+        # Remove this hack after 6 months or so
+        return self._is_related_to("rhel6.0")
 
-    def supports_qemu_ga(self):
-        return self._is_related_to(["debian8", "fedora18", "rhel6.0", "sles11sp4"])
+    def supports_usb3(self):
+        # qemu-xhci
+        devids = ["http://pcisig.com/pci/1b36/0004"]
+        return bool(self._device_filter(devids=devids))
 
-    def default_videomodel(self, guest):
-        if guest.os.is_pseries():
-            return "vga"
+    def supports_virtio1(self):
+        # Use virtio1.0-net device as a proxy for virtio1.0 as a whole
+        devids = ["http://pcisig.com/pci/1af4/1041"]
+        return bool(self._device_filter(devids=devids))
 
-        if guest.has_spice() and guest.os.is_x86():
-            if guest.has_gl():
-                return "virtio"
-            else:
-                return "qxl"
-
-        if self.is_windows():
-            return "vga"
-
-        return None
+    def supports_chipset_q35(self):
+        # For our purposes, check for the union of q35 + virtio1.0 support
+        if self.supports_virtionet() and not self.supports_virtio1():
+            return False
+        devids = ["http://qemu.org/chipset/x86/q35"]
+        return bool(self._device_filter(devids=devids))
 
     def get_recommended_resources(self, guest):
         ret = {}

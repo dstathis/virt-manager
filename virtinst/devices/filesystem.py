@@ -19,62 +19,31 @@ class DeviceFilesystem(Device):
     TYPE_FILE = "file"
     TYPE_BLOCK = "block"
     TYPE_RAM = "ram"
-    TYPE_DEFAULT = "default"
-    TYPES = [TYPE_MOUNT, TYPE_TEMPLATE, TYPE_FILE, TYPE_BLOCK, TYPE_RAM,
-        TYPE_DEFAULT]
 
     MODE_PASSTHROUGH = "passthrough"
     MODE_MAPPED = "mapped"
     MODE_SQUASH = "squash"
-    MODE_DEFAULT = "default"
-    MODES = [MODE_PASSTHROUGH, MODE_MAPPED, MODE_SQUASH, MODE_DEFAULT]
+    MODES = [MODE_PASSTHROUGH, MODE_MAPPED, MODE_SQUASH]
 
     WRPOLICY_IMM = "immediate"
-    WRPOLICY_DEFAULT = "default"
-    WRPOLICIES = [WRPOLICY_IMM, WRPOLICY_DEFAULT]
+    WRPOLICIES = [WRPOLICY_IMM]
 
     DRIVER_PATH = "path"
     DRIVER_HANDLE = "handle"
     DRIVER_LOOP = "loop"
     DRIVER_NBD = "nbd"
-    DRIVER_DEFAULT = "default"
-    DRIVERS = [DRIVER_PATH, DRIVER_HANDLE, DRIVER_LOOP, DRIVER_NBD,
-        DRIVER_DEFAULT]
 
 
-    _type_prop = XMLProperty("./@type",
-                       default_cb=lambda s: None,
-                       default_name=TYPE_DEFAULT)
-    accessmode = XMLProperty("./@accessmode",
-                       default_cb=lambda s: None,
-                       default_name=MODE_DEFAULT)
-    wrpolicy = XMLProperty("./driver/@wrpolicy",
-                           default_cb=lambda s: None,
-                           default_name=WRPOLICY_DEFAULT)
-    driver = XMLProperty("./driver/@type",
-                         default_cb=lambda s: None,
-                         default_name=DRIVER_DEFAULT)
+    _type_prop = XMLProperty("./@type")
+    accessmode = XMLProperty("./@accessmode")
+    wrpolicy = XMLProperty("./driver/@wrpolicy")
+    driver = XMLProperty("./driver/@type")
     format = XMLProperty("./driver/@format")
 
     readonly = XMLProperty("./readonly", is_bool=True)
 
     units = XMLProperty("./source/@units")
-
-    def _validate_set_target(self, val):
-        # In case of qemu for default fs type (mount) target is not
-        # actually a directory, it is merely a arbitrary string tag
-        # that is exported to the guest as a hint for where to mount
-        if ((self.conn.is_qemu() or self.conn.is_test()) and
-            (self.type is None or
-             self.type == self.TYPE_DEFAULT or
-             self.type == self.TYPE_MOUNT)):
-            pass
-        elif not os.path.isabs(val):
-            raise ValueError(_("Filesystem target '%s' must be an absolute "
-                               "path") % val)
-        return val
-    target = XMLProperty("./target/@dir",
-                         set_converter=_validate_set_target)
+    target = XMLProperty("./target/@dir")
 
     _source_dir = XMLProperty("./source/@dir")
     _source_name = XMLProperty("./source/@name")
@@ -102,7 +71,7 @@ class DeviceFilesystem(Device):
     def _get_type(self):
         return getattr(self, '_type_prop')
     def _set_type(self, val):
-        # Get type/value of the attrubute of "source" property
+        # Get type/value of the attribute of "source" property
         old_source_type = self._type_to_source_prop()
         old_source_value = self.source
 
@@ -118,17 +87,44 @@ class DeviceFilesystem(Device):
 
     type = property(_get_type, _set_type)
 
+
+    ##############
+    # Validation #
+    ##############
+
+    def validate_target(self, target):
+        # In case of qemu for default fs type (mount) target is not
+        # actually a directory, it is merely a arbitrary string tag
+        # that is exported to the guest as a hint for where to mount
+        if ((self.conn.is_qemu() or self.conn.is_test()) and
+            (self.type is None or
+             self.type == self.TYPE_MOUNT)):
+            return
+
+        if not os.path.isabs(target):
+            raise ValueError(_("Filesystem target '%s' must be an absolute "
+                               "path") % target)
+
+    def validate(self):
+        if self.target:
+            self.validate_target(self.target)
+
+
+    ##################
+    # Default config #
+    ##################
+
     def set_defaults(self, guest):
         ignore = guest
 
         if self.conn.is_qemu() or self.conn.is_lxc() or self.conn.is_test():
             # type=mount is the libvirt default. But hardcode it
             # here since we need it for the accessmode check
-            if self.type is None or self.type == self.TYPE_DEFAULT:
+            if self.type is None:
                 self.type = self.TYPE_MOUNT
 
             # libvirt qemu defaults to accessmode=passthrough, but that
             # really only works well for qemu running as root, which is
             # not the common case. so use mode=mapped
-            if self.accessmode is None or self.accessmode == self.MODE_DEFAULT:
+            if self.accessmode is None:
                 self.accessmode = self.MODE_MAPPED

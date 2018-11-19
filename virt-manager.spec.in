@@ -1,3 +1,7 @@
+# This package depends on automagic byte compilation
+# https://fedoraproject.org/wiki/Changes/No_more_automagic_Python_bytecompilation_phase_2
+%global _python_bytecompile_extra 1
+
 # -*- rpm-spec -*-
 
 # RPM doesn't detect that code in /usr/share is python3, this forces it
@@ -6,18 +10,7 @@
 
 
 %global with_guestfs               0
-%global stable_defaults            0
-%global askpass_package            "openssh-askpass"
-%global qemu_user                  "qemu"
-%global libvirt_packages           "libvirt-daemon-kvm,libvirt-daemon-config-network"
-%global kvm_packages               ""
-%global preferred_distros          "fedora,rhel"
 %global default_hvs                "qemu,xen,lxc"
-
-%if 0%{?rhel}
-%global preferred_distros          "rhel,fedora"
-%global stable_defaults            1
-%endif
 
 
 # End local config
@@ -55,6 +48,10 @@ Requires: dconf
 # virt-manager works fine with either, so pull the latest bits so there's
 # no ambiguity.
 Requires: vte291
+
+# Weak dependencies for the common virt-manager usecase
+Recommends: (libvirt-daemon-kvm or libvirt-daemon-qemu)
+Recommends: libvirt-daemon-config-network
 
 BuildRequires: intltool
 BuildRequires: /usr/bin/pod2man
@@ -110,41 +107,11 @@ machine).
 
 
 %build
-%if %{qemu_user}
-%global _qemu_user --qemu-user=%{qemu_user}
-%endif
-
-%if %{kvm_packages}
-%global _kvm_packages --kvm-package-names=%{kvm_packages}
-%endif
-
-%if %{preferred_distros}
-%global _preferred_distros --preferred-distros=%{preferred_distros}
-%endif
-
-%if %{libvirt_packages}
-%global _libvirt_packages --libvirt-package-names=%{libvirt_packages}
-%endif
-
-%if %{askpass_package}
-%global _askpass_package --askpass-package-names=%{askpass_package}
-%endif
-
-%if %{stable_defaults}
-%global _stable_defaults --stable-defaults
-%endif
-
 %if %{default_hvs}
 %global _default_hvs --default-hvs %{default_hvs}
 %endif
 
 ./setup.py configure \
-    %{?_qemu_user} \
-    %{?_kvm_packages} \
-    %{?_libvirt_packages} \
-    %{?_askpass_package} \
-    %{?_preferred_distros} \
-    %{?_stable_defaults} \
     %{?_default_hvs}
 
 

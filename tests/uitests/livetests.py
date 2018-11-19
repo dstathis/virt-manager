@@ -15,6 +15,7 @@ def _vm_wrapper(vmname, uri="qemu:///system"):
     """
     def wrap1(fn):
         def wrapper(self, *args, **kwargs):
+            self.app.error_if_already_running()
             xmlfile = "%s/xml/%s.xml" % (os.path.dirname(__file__), vmname)
             conn = libvirt.open(uri)
             dom = conn.defineXML(open(xmlfile).read())
@@ -67,11 +68,11 @@ class Console(uiutils.UITestCase):
         self.assertTrue(lambda: win.active)
 
         win.find("Send Key", "menu").click()
-        win.find("Ctrl\+Alt\+F1", "menu item").click()
+        win.find(r"Ctrl\+Alt\+F1", "menu item").click()
         win.find("Send Key", "menu").click()
-        win.find("Ctrl\+Alt\+F10", "menu item").click()
+        win.find(r"Ctrl\+Alt\+F10", "menu item").click()
         win.find("Send Key", "menu").click()
-        win.find("Ctrl\+Alt\+Delete", "menu item").click()
+        win.find(r"Ctrl\+Alt\+Delete", "menu item").click()
 
         # 'Resize to VM' testing
         oldsize = win.size
@@ -89,7 +90,7 @@ class Console(uiutils.UITestCase):
 
         # Wait for toolbar to hide, then reveal it again
         uiutils.check_in_loop(lambda: not fstb.showing, timeout=5)
-        self.point(win.size[0] / 2, 0)
+        self.point(win.position[0] + win.size[0] / 2, 0)
         uiutils.check_in_loop(lambda: fstb.showing)
 
         # Click stuff and exit fullscreen
@@ -194,15 +195,17 @@ class Console(uiutils.UITestCase):
         # Change CDROM
         win.find("IDE CDROM 1", "table cell").click()
         tab = win.find("disk-tab", None)
+        entry = win.find("media-entry")
+        appl = win.find("config-apply")
         uiutils.check_in_loop(lambda: tab.showing)
-        tab.find("Connect", "push button").click()
-        cm = self.app.root.find("Choose Media", "dialog")
-        cm.find("Image Location", "radio button").click()
-        cm.find("Location:", "text").text = fname
-        cm.find("OK", "push button").click()
-        self.assertTrue(tab.find("disk-source-path").text == fname)
-        tab.find("Disconnect", "push button").click()
-        self.assertTrue("-" in tab.find("disk-source-path").text)
+        entry.text = fname
+        appl.click()
+        uiutils.check_in_loop(lambda: not appl.sensitive)
+        self.assertTrue(entry.text == fname)
+        entry.click_secondary_icon()
+        appl.click()
+        uiutils.check_in_loop(lambda: not appl.sensitive)
+        self.assertTrue(not entry.text)
 
 
     @_vm_wrapper("uitests-hotplug")

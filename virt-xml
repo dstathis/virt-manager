@@ -56,6 +56,13 @@ def get_diff(origxml, newxml):
     return ret
 
 
+def set_distro_variant(options, guest):
+    if options.distro_variant is None:
+        return
+
+    guest.set_os_name(options.distro_variant)
+
+
 def get_domain_and_guest(conn, domstr):
     try:
         int(domstr)
@@ -175,6 +182,8 @@ def action_edit(guest, options, parserclass):
             fail(_("'--edit %s' doesn't make sense with --%s, "
                    "just use empty '--edit'") %
             (options.edit, parserclass.cli_arg_name))
+    if options.distro_variant is not None:
+        fail(_("--os-variant is not supported with --edit"))
 
     return cli.parse_option_strings(options, guest, inst, update=True)
 
@@ -182,13 +191,20 @@ def action_edit(guest, options, parserclass):
 def action_add_device(guest, options, parserclass):
     if not parserclass.prop_is_list(guest):
         fail(_("Cannot use --add-device with --%s") % parserclass.cli_arg_name)
-    return cli.parse_option_strings(options, guest, None)
+    set_distro_variant(options, guest)
+    devs = cli.parse_option_strings(options, guest, None)
+    devs = util.listify(devs)
+    for dev in devs:
+        dev.set_defaults(guest)
+    return devs
 
 
 def action_remove_device(guest, options, parserclass):
     if not parserclass.prop_is_list(guest):
         fail(_("Cannot use --remove-device with --%s") %
              parserclass.cli_arg_name)
+    if options.distro_variant is not None:
+        fail(_("--os-variant is not supported with --remove-device"))
 
     devs = _find_objects_to_edit(guest, "remove-device",
         getattr(options, parserclass.cli_arg_name)[-1], parserclass)
@@ -203,6 +219,8 @@ def action_build_xml(conn, options, parserclass):
     if not parserclass.propname:
         fail(_("--build-xml not supported for --%s") %
              parserclass.cli_arg_name)
+    if options.distro_variant is not None:
+        fail(_("--os-variant is not supported with --build-xml"))
 
     guest = virtinst.Guest(conn)
     inst = parserclass.lookup_prop(guest)
@@ -210,7 +228,12 @@ def action_build_xml(conn, options, parserclass):
         inst = inst.new()
     else:
         inst = inst.__class__(conn)
-    return cli.parse_option_strings(options, guest, inst)
+
+    devs = cli.parse_option_strings(options, guest, inst)
+    devs = util.listify(devs)
+    for dev in devs:
+        dev.set_defaults(guest)
+    return devs
 
 
 def setup_device(dev):
@@ -221,7 +244,7 @@ def setup_device(dev):
 
     logging.debug("Doing setup for disk=%s", dev)
 
-    dev.setup(cli.get_meter())
+    dev.build_storage(cli.get_meter())
     dev.virt_xml_setup = True
 
 
@@ -235,14 +258,14 @@ def define_changes(conn, inactive_xmlobj, devs, action, confirm):
         for dev in devs:
             setup_device(dev)
 
-    conn.defineXML(inactive_xmlobj.get_xml_config())
+    conn.defineXML(inactive_xmlobj.get_xml())
     print_stdout(_("Domain '%s' defined successfully.") % inactive_xmlobj.name)
     return True
 
 
 def update_changes(domain, devs, action, confirm):
     for dev in devs:
-        xml = dev.get_xml_config()
+        xml = dev.get_xml()
 
         if confirm:
             if action == "hotplug":
@@ -276,7 +299,7 @@ def update_changes(domain, devs, action, confirm):
 
 
 def prepare_changes(xmlobj, options, parserclass):
-    origxml = xmlobj.get_xml_config()
+    origxml = xmlobj.get_xml()
 
     if options.edit != -1:
         devs = action_edit(xmlobj, options, parserclass)
@@ -290,7 +313,7 @@ def prepare_changes(xmlobj, options, parserclass):
         devs = action_remove_device(xmlobj, options, parserclass)
         action = "hotunplug"
 
-    newxml = xmlobj.get_xml_config()
+    newxml = xmlobj.get_xml()
     diff = get_diff(origxml, newxml)
 
     if options.print_diff:
@@ -350,6 +373,11 @@ def parse_args():
         help=_("Only print the requested change, in full XML format"))
     outg.add_argument("--confirm", action="store_true",
         help=_("Require confirmation before saving any results."))
+
+    osg = parser.add_argument_group(_("OS options"))
+    osg.add_argument("--os-variant", dest="distro_variant",
+        help=_("The OS variant installed in the guest, "
+               "e.g. 'fedora29', 'rhel7', 'win10 etc."))
 
     g = parser.add_argument_group(_("XML options"))
     cli.add_disk_option(g, editexample=True)
@@ -427,7 +455,7 @@ def main(conn=None):
         devs = action_build_xml(conn, options, parserclass)
         for dev in devs:
             # pylint: disable=no-member
-            print_stdout(dev.get_xml_config())
+            print_stdout(dev.get_xml())
         return 0
 
     if options.update:

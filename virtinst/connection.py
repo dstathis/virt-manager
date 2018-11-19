@@ -9,8 +9,6 @@ import weakref
 
 import libvirt
 
-from virtcli import CLIConfig
-
 from . import pollhelpers
 from . import support
 from . import util
@@ -64,7 +62,7 @@ class VirtinstConnection(object):
 
         # These let virt-manager register a callback which provides its
         # own cached object lists, rather than doing fresh calls
-        self.cb_fetch_all_guests = None
+        self.cb_fetch_all_domains = None
         self.cb_fetch_all_pools = None
         self.cb_fetch_all_vols = None
         self.cb_fetch_all_nodedevs = None
@@ -156,27 +154,27 @@ class VirtinstConnection(object):
     # Polling routines #
     ####################
 
-    _FETCH_KEY_GUESTS = "vms"
+    _FETCH_KEY_DOMAINS = "vms"
     _FETCH_KEY_POOLS = "pools"
     _FETCH_KEY_VOLS = "vols"
     _FETCH_KEY_NODEDEVS = "nodedevs"
 
-    def _fetch_all_guests_raw(self):
+    def _fetch_all_domains_raw(self):
         ignore, ignore, ret = pollhelpers.fetch_vms(
             self, {}, lambda obj, ignore: obj)
         return [Guest(weakref.ref(self), parsexml=obj.XMLDesc(0))
                 for obj in ret]
 
-    def fetch_all_guests(self):
+    def fetch_all_domains(self):
         """
         Returns a list of Guest() objects
         """
-        if self.cb_fetch_all_guests:
-            return self.cb_fetch_all_guests()  # pylint: disable=not-callable
+        if self.cb_fetch_all_domains:
+            return self.cb_fetch_all_domains()  # pylint: disable=not-callable
 
-        key = self._FETCH_KEY_GUESTS
+        key = self._FETCH_KEY_DOMAINS
         if key not in self._fetch_cache:
-            self._fetch_cache[key] = self._fetch_all_guests_raw()
+            self._fetch_cache[key] = self._fetch_all_domains_raw()
         return self._fetch_cache[key][:]
 
     def _build_pool_raw(self, poolobj):
@@ -303,46 +301,25 @@ class VirtinstConnection(object):
         if not self.is_remote():
             return self.local_libvirt_version()
 
-        if not self._daemon_version:
-            if not self.check_support(support.SUPPORT_CONN_LIBVERSION):
-                self._daemon_version = 0
-            else:
+        if self._daemon_version is None:
+            self._daemon_version = 0
+            try:
                 self._daemon_version = self._libvirtconn.getLibVersion()
+            except Exception:
+                logging.debug("Error calling getLibVersion", exc_info=True)
         return self._daemon_version
 
     def conn_version(self):
         if self._fake_conn_version is not None:
             return self._fake_conn_version
 
-        if not self._conn_version:
-            if not self.check_support(support.SUPPORT_CONN_GETVERSION):
-                self._conn_version = 0
-            else:
+        if self._conn_version is None:
+            self._conn_version = 0
+            try:
                 self._conn_version = self._libvirtconn.getVersion()
+            except Exception:
+                logging.debug("Error calling getVersion", exc_info=True)
         return self._conn_version
-
-    def stable_defaults(self, emulator=None, force=False):
-        """
-        :param force: Just check if we are running on RHEL, regardless of
-            whether stable defaults are requested by the build. This is needed
-            to ensure we don't enable VM devices that are compiled out on
-            RHEL, like vmvga
-        """
-        if not CLIConfig.stable_defaults and not force:
-            return False
-
-        if not self.is_qemu():
-            return False
-
-        if emulator:
-            return str(emulator).startswith("/usr/libexec")
-
-        for guest in self.caps.guests:
-            for dom in guest.domains:
-                emulator = dom.emulator or guest.emulator
-                if emulator.startswith("/usr/libexec"):
-                    return True
-        return False
 
 
     ###################
@@ -419,8 +396,12 @@ class VirtinstConnection(object):
                 return False
         return True
 
+    def _check_version(self, version):
+        # Entry point for the test suite to do simple version checks,
+        # actual code should only use check_support
+        return support.check_version(self, version)
+
     def support_remote_url_install(self):
         if self._magic_uri:
             return False
-        return (self.check_support(self.SUPPORT_CONN_STREAM) and
-                self.check_support(self.SUPPORT_STREAM_UPLOAD))
+        return self.check_support(self.SUPPORT_CONN_STREAM)

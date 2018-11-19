@@ -8,16 +8,13 @@
 # See the COPYING file in the top-level directory.
 
 import logging
-import os
 
 import libvirt
 
 from virtcli import CLIConfig
 
 from . import util
-from . import support
 from .devices import *  # pylint: disable=wildcard-import
-from .distroinstaller import DistroInstaller
 from .domain import *  # pylint: disable=wildcard-import
 from .domcapabilities import DomainCapabilities
 from .osdict import OSDB
@@ -98,7 +95,7 @@ class Guest(XMLBuilder):
                                (str(e)))
 
     @staticmethod
-    def validate_name(conn, name, check_collision, validate=True):
+    def validate_name(conn, name, check_collision=True, validate=True):
         if validate:
             util.validate_name(_("Guest"), name)
         if not check_collision:
@@ -110,12 +107,43 @@ class Guest(XMLBuilder):
             return
         raise ValueError(_("Guest name '%s' is already in use.") % name)
 
+    @staticmethod
+    def get_recommended_machine(capsinfo):
+        """
+        Return the recommended machine type for the passed capsinfo.
+        We only return this for arch cases where there's a very clear
+        preference that's different from the default machine type
+        """
+        def _qemu_machine():
+            if (capsinfo.arch in ["ppc64", "ppc64le"] and
+                "pseries" in capsinfo.machines):
+                return "pseries"
+
+            if capsinfo.arch in ["armv7l", "aarch64"]:
+                if "virt" in capsinfo.machines:
+                    return "virt"
+                if "vexpress-a15" in capsinfo.machines:
+                    return "vexpress-a15"
+
+            if capsinfo.arch in ["s390x"]:
+                if "s390-ccw-virtio" in capsinfo.machines:
+                    return "s390-ccw-virtio"
+
+        if capsinfo.conn.is_qemu() or capsinfo.conn.is_test():
+            return _qemu_machine()
+        return None
+
+
+    #################
+    # init handling #
+    #################
 
     XML_NAME = "domain"
-    _XML_PROP_ORDER = ["type", "name", "uuid", "title", "description",
-        "hotplugmemorymax", "hotplugmemoryslots", "maxmemory", "memory",
+    _XML_PROP_ORDER = [
+        "type", "name", "uuid", "title", "description", "_metadata",
+        "hotplugmemorymax", "hotplugmemoryslots", "maxmemory", "_memory",
         "blkiotune", "memtune", "memoryBacking",
-        "vcpus", "curvcpus", "vcpu_placement",
+        "_vcpus", "curvcpus", "vcpu_placement",
         "cpuset", "numatune", "resource", "sysinfo",
         "bootloader", "os", "idmap", "features", "cpu", "clock",
         "on_poweroff", "on_reboot", "on_crash",
@@ -123,9 +151,6 @@ class Guest(XMLBuilder):
 
     def __init__(self, *args, **kwargs):
         XMLBuilder.__init__(self, *args, **kwargs)
-
-        self.autostart = False
-        self.replace = False
 
         # Allow virt-manager to override the default graphics type
         self.default_graphics_type = CLIConfig.default_graphics
@@ -136,74 +161,53 @@ class Guest(XMLBuilder):
         self.skip_default_usbredir = False
         self.skip_default_graphics = False
         self.skip_default_rng = False
-        self.x86_cpu_default = self.cpu.SPECIAL_MODE_HOST_MODEL_ONLY
+        self.x86_cpu_default = self.cpu.SPECIAL_MODE_APP_DEFAULT
 
-        self.__os_object = None
-        self._random_uuid = None
-        self._install_cdrom_device = None
-        self._defaults_are_set = False
-
-        # The libvirt virDomain object we 'Create'
-        self.domain = None
-
-        # This is set via Capabilities.build_virtinst_guest
-        self.capsinfo = None
-
-        self.installer = DistroInstaller(self.conn)
+        self.__osinfo = None
+        self._capsinfo = None
+        self._domcaps = None
 
 
     ######################
     # Property accessors #
     ######################
 
-    def _validate_name(self, val):
-        if val == self.name:
-            return
-        self.validate_name(self.conn, val, check_collision=not self.replace)
-    name = XMLProperty("./name", validate_cb=_validate_name)
+    name = XMLProperty("./name")
 
     def _set_memory(self, val):
-        if val is None:
-            return None
+        if val is not None:
+            val = int(val)
+            if self.maxmemory is None or self.maxmemory < val:
+                self.maxmemory = val
+        self._memory = val
+    def _get_memory(self):
+        return self._memory
+    _memory = XMLProperty("./currentMemory", is_int=True)
+    memory = property(_get_memory, _set_memory)
 
-        if self.maxmemory is None or self.maxmemory < val:
-            self.maxmemory = val
-        return val
-    memory = XMLProperty("./currentMemory", is_int=True,
-                         default_cb=lambda s: 1,
-                         set_converter=_set_memory)
     maxmemory = XMLProperty("./memory", is_int=True)
     hotplugmemorymax = XMLProperty("./maxMemory", is_int=True)
     hotplugmemoryslots = XMLProperty("./maxMemory/@slots", is_int=True)
 
     def _set_vcpus(self, val):
-        if val is None:
-            return None
+        if val is not None:
+            val = int(val)
+            # Don't force set curvcpus unless already specified
+            if self.curvcpus is not None and self.curvcpus > val:
+                self.curvcpus = val
+        self._vcpus = val
+    def _get_vcpus(self):
+        return self._vcpus
+    _vcpus = XMLProperty("./vcpu", is_int=True)
+    vcpus = property(_get_vcpus, _set_vcpus)
 
-        # Don't force set curvcpus unless already specified
-        if self.curvcpus is not None and self.curvcpus > val:
-            self.curvcpus = val
-        return val
-    vcpus = XMLProperty("./vcpu", is_int=True,
-                        set_converter=_set_vcpus,
-                        default_cb=lambda s: 1)
     curvcpus = XMLProperty("./vcpu/@current", is_int=True)
     vcpu_placement = XMLProperty("./vcpu/@placement")
+    cpuset = XMLProperty("./vcpu/@cpuset")
 
-    def _validate_cpuset(self, val):
-        DomainNumatune.validate_cpuset(self.conn, val)
-    cpuset = XMLProperty("./vcpu/@cpuset",
-                         validate_cb=_validate_cpuset)
-
-    def _get_default_uuid(self):
-        if self._random_uuid is None:
-            self._random_uuid = util.generate_uuid(self.conn)
-        return self._random_uuid
-    uuid = XMLProperty("./uuid", default_cb=_get_default_uuid)
-
-
+    uuid = XMLProperty("./uuid")
     id = XMLProperty("./@id", is_int=True)
-    type = XMLProperty("./@type", default_cb=lambda s: "xen")
+    type = XMLProperty("./@type")
     bootloader = XMLProperty("./bootloader")
     description = XMLProperty("./description")
     title = XMLProperty("./title")
@@ -228,289 +232,101 @@ class Guest(XMLBuilder):
     idmap = XMLChildProperty(DomainIdmap, is_single=True)
     resource = XMLChildProperty(DomainResource, is_single=True)
     sysinfo = XMLChildProperty(DomainSysinfo, is_single=True)
+    _metadata = XMLChildProperty(DomainMetadata, is_single=True)
 
     xmlns_qemu = XMLChildProperty(DomainXMLNSQemu, is_single=True)
 
 
+    ##############################
+    # osinfo related definitions #
+    ##############################
+
+    def _get_osinfo(self):
+        if self.__osinfo:
+            return self.__osinfo
+
+        os_id = self._metadata.libosinfo.os_id
+        if os_id:
+            self.__osinfo = OSDB.lookup_os_by_full_id(os_id)
+            if not self.__osinfo:
+                logging.debug("XML had libosinfo os id=%s but we didn't "
+                        "find any libosinfo object matching that", os_id)
+
+        if not self.__osinfo:
+            self.set_os_name("generic")
+        return self.__osinfo
+    osinfo = property(_get_osinfo)
+
+    def set_os_name(self, name):
+        obj = OSDB.lookup_os(name)
+        if obj is None:
+            raise ValueError(_("Unknown OS name '%s'. "
+                    "See `osinfo-query os` for valid values.") % name)
+
+        logging.debug("Setting Guest osinfo %s", obj)
+        self.__osinfo = obj
+        self._metadata.libosinfo.os_id = self.__osinfo.full_id
+
+    def set_os_full_id(self, full_id):
+        obj = OSDB.lookup_os_by_full_id(full_id)
+        if obj is None:
+            raise ValueError(_("Unknown libosinfo ID '%s'") % full_id)
+
+        logging.debug("Setting Guest osinfo %s", obj)
+        self.__osinfo = obj
+        self._metadata.libosinfo.os_id = self.__osinfo.full_id
+
+    def _supports_virtio(self, os_support):
+        if not self.conn.is_qemu():
+            return False
+
+        # These _only_ support virtio so don't check the OS
+        if (self.os.is_arm_machvirt() or
+            self.os.is_s390x() or
+            self.os.is_pseries()):
+            return True
+
+        if not os_support:
+            return False
+
+        if self.os.is_x86():
+            return True
+
+        return False
+
+    def supports_virtionet(self):
+        return self._supports_virtio(self.osinfo.supports_virtionet())
+    def supports_virtiodisk(self):
+        return self._supports_virtio(self.osinfo.supports_virtiodisk())
+    def _supports_virtioserial(self):
+        return self._supports_virtio(self.osinfo.supports_virtioserial())
+
+
     ###############################
-    # Distro detection properties #
+    # Public XML APIs and helpers #
     ###############################
-
-    def _set_os_object(self, variant):
-        obj = OSDB.lookup_os(variant)
-        if not obj:
-            obj = OSDB.lookup_os("generic")
-        self.__os_object = obj
-    def _get_os_object(self):
-        if not self.__os_object:
-            self._set_os_object(None)
-        return self.__os_object
-    _os_object = property(_get_os_object)
-
-    def _get_os_variant(self):
-        return self._os_object.name
-    def _set_os_variant(self, val):
-        if val:
-            val = val.lower()
-            if OSDB.lookup_os(val) is None:
-                raise ValueError(
-                    _("Distro '%s' does not exist in our dictionary") % val)
-
-        logging.debug("Setting Guest.os_variant to '%s'", val)
-        self._set_os_object(val)
-    os_variant = property(_get_os_variant, _set_os_variant)
-
-
-    ########################################
-    # Device Add/Remove Public API methods #
-    ########################################
 
     def add_device(self, dev):
         self.devices.add_child(dev)
-
     def remove_device(self, dev):
         self.devices.remove_child(dev)
-
     devices = XMLChildProperty(_DomainDevices, is_single=True)
 
-
-    ############################
-    # Install Helper functions #
-    ############################
-
-    def _prepare_install(self, meter, dry=False):
-        ignore = dry
-
-        # Fetch install media, prepare installer devices
-        self.installer.prepare(self, meter)
-
-        # Initialize install device list
-        if self._install_cdrom_device:
-            self._install_cdrom_device.path = self.installer.cdrom_path()
-            self._install_cdrom_device.validate()
-
-    def _prepare_get_install_xml(self):
-        # We do a shallow copy of the OS block here, so that we can
-        # set the install time properties but not permanently overwrite
-        # any config the user explicitly requested.
-        data = (self.os.bootorder, self.os.kernel, self.os.initrd,
-                self.os.kernel_args, self.on_reboot)
-        return data
-
-    def _finish_get_install_xml(self, data):
-        (self.os.bootorder, self.os.kernel, self.os.initrd,
-                self.os.kernel_args, self.on_reboot) = data
-
-    def _get_install_xml(self, *args, **kwargs):
-        data = self._prepare_get_install_xml()
-        try:
-            return self._do_get_install_xml(*args, **kwargs)
-        finally:
-            self._finish_get_install_xml(data)
-
-    def _do_get_install_xml(self, install):
+    def prefers_uefi(self):
         """
-        Return the full Guest xml configuration.
-
-        @install: Whether we want the 'OS install' configuration or
-            the 'post-install' configuration. The difference is mostly
-            whether the install media is attached and set as the boot
-            device. Some installs, like an import or livecd, do not have
-            an 'install' config.
+        Return True if this config prefers UEFI. For example,
+        arm+machvirt prefers UEFI since it's required for traditional
+        install methods
         """
-        if install and not self.installer.has_install_phase():
-            return None
+        return self.os.is_arm_machvirt()
 
-        self.installer.alter_bootconfig(self, install)
-        if not install:
-            self._remove_cdrom_install_media()
-
-        if install:
-            self.on_reboot = "destroy"
-
-        self._set_osxml_defaults()
-
-        self.bootloader = None
-        if (not install and
-            self.os.is_xenpv() and
-            not self.os.kernel):
-            self.bootloader = "/usr/bin/pygrub"
-            self.os.clear()
-
-        return self.get_xml_config()
-
-
-    ###########################
-    # Private install helpers #
-    ###########################
-
-    def _build_xml(self):
-        install_xml = self._get_install_xml(install=True)
-        final_xml = self._get_install_xml(install=False)
-
-        logging.debug("Generated install XML: %s",
-            (install_xml and ("\n" + install_xml) or "None required"))
-        logging.debug("Generated boot XML: \n%s", final_xml)
-
-        return install_xml, final_xml
-
-    def _manual_transient_create(self, install_xml, final_xml, needs_boot):
+    def get_uefi_path(self):
         """
-        For hypervisors (like vz) that don't implement createXML,
-        we need to define+start, and undefine on start failure
+        If UEFI firmware path is found, return it, otherwise raise an error
         """
-        domain = self.conn.defineXML(install_xml or final_xml)
-        if not needs_boot:
-            return domain
-
-        # Handle undefining the VM if the initial startup fails
-        try:
-            domain.create()
-        except Exception:
-            try:
-                domain.undefine()
-            except Exception:
-                pass
-            raise
-
-
-        if install_xml and install_xml != final_xml:
-            domain = self.conn.defineXML(final_xml)
-        return domain
-
-    def _create_guest(self, meter, install_xml, final_xml, doboot, transient):
-        """
-        Actually do the XML logging, guest defining/creating
-
-        :param doboot: Boot guest even if it has no install phase
-        """
-        meter_label = _("Creating domain...")
-        meter = util.ensure_meter(meter)
-        meter.start(size=None, text=meter_label)
-        needs_boot = doboot or self.installer.has_install_phase()
-
-        if self.type == "vz":
-            if transient:
-                raise RuntimeError(_("Domain type 'vz' doesn't support "
-                    "transient installs."))
-            domain = self._manual_transient_create(
-                    install_xml, final_xml, needs_boot)
-
-        else:
-            if transient or needs_boot:
-                domain = self.conn.createXML(install_xml or final_xml, 0)
-            if not transient:
-                domain = self.conn.defineXML(final_xml)
-
-        self.domain = domain
-        try:
-            logging.debug("XML fetched from libvirt object:\n%s",
-                          self.domain.XMLDesc(0))
-        except Exception as e:
-            logging.debug("Error fetching XML from libvirt object: %s", e)
-
-
-    def _flag_autostart(self):
-        """
-        Set the autostart flag for self.domain if the user requested it
-        """
-        if not self.autostart:
-            return
-
-        try:
-            self.domain.setAutostart(True)
-        except libvirt.libvirtError as e:
-            if util.is_error_nosupport(e):
-                logging.warning("Could not set autostart flag: libvirt "
-                             "connection does not support autostart.")
-            else:
-                raise e
-
-
-
-    ##############
-    # Public API #
-    ##############
-
-    def start_install(self, meter=None,
-                      dry=False, return_xml=False,
-                      doboot=True, transient=False):
-        """
-        Begin the guest install (stage1).
-        :param return_xml: Don't create the guest, just return generated XML
-        """
-        if self.domain is not None:
-            raise RuntimeError(_("Domain has already been started!"))
-
-        self.set_install_defaults()
-
-        self._prepare_install(meter, dry)
-        try:
-            # Create devices if required (disk images, etc.)
-            if not dry:
-                for dev in self.devices.get_all():
-                    dev.setup(meter)
-
-            install_xml, final_xml = self._build_xml()
-            if return_xml:
-                return (install_xml, final_xml)
-            if dry:
-                return
-
-            # Remove existing VM if requested
-            self.check_vm_collision(self.conn, self.name,
-                                    do_remove=self.replace)
-
-            self._create_guest(meter, install_xml, final_xml,
-                               doboot, transient)
-
-            # Set domain autostart flag if requested
-            self._flag_autostart()
-        finally:
-            self.installer.cleanup()
-
-    def get_created_disks(self):
-        return [d for d in self.devices.disk if d.storage_was_created]
-
-    def cleanup_created_disks(self, meter):
-        """
-        Remove any disks we created as part of the install. Only ever
-        called by clients.
-        """
-        clean_disks = self.get_created_disks()
-        if not clean_disks:
-            return
-
-        for disk in clean_disks:
-            logging.debug("Removing created disk path=%s vol_object=%s",
-                disk.path, disk.get_vol_object())
-            name = os.path.basename(disk.path)
-
-            try:
-                meter.start(size=None, text=_("Removing disk '%s'") % name)
-
-                if disk.get_vol_object():
-                    disk.get_vol_object().delete()
-                else:
-                    os.unlink(disk.path)
-
-                meter.end(0)
-            except Exception as e:
-                logging.debug("Failed to remove disk '%s'",
-                    name, exc_info=True)
-                logging.error("Failed to remove disk '%s': %s", name, e)
-
-
-    ###########################
-    # XML convenience helpers #
-    ###########################
-
-    def set_uefi_default(self):
-        """
-        Configure UEFI for the VM, but only if libvirt is advertising
-        a known UEFI binary path.
-        """
-        domcaps = DomainCapabilities.build_from_guest(self)
+        if not self.os.arch:
+            self.set_capabilities_defaults()
+        domcaps = self.lookup_domcaps()
 
         if not domcaps.supports_uefi_xml():
             raise RuntimeError(_("Libvirt version does not support UEFI."))
@@ -525,59 +341,207 @@ class Guest(XMLBuilder):
             raise RuntimeError(_("Did not find any UEFI binary path for "
                 "arch '%s'") % self.os.arch)
 
+        return path
+
+    def set_uefi_path(self, path):
+        """
+        Configure UEFI for the VM, but only if libvirt is advertising
+        a known UEFI binary path.
+        """
         self.os.loader_ro = True
         self.os.loader_type = "pflash"
         self.os.loader = path
 
-        self.check_uefi_secure()
+        # If the firmware name contains "secboot" it is probably build
+        # with SMM feature required so we need to enable that feature,
+        # otherwise the firmware may fail to load.  True secure boot is
+        # currently supported only on x86 architecture and with q35 with
+        # SMM feature enabled so change the machine to q35 as well.
+        # To actually enforce the secure boot for the guest if Secure Boot
+        # Mode is configured we need to enable loader secure feature.
+        if (self.os.is_x86() and
+            "secboot" in self.os.loader):
+            self.features.smm = True
+            self.os.loader_secure = True
+            self.os.machine = "q35"
+
+        # UEFI doesn't work with hyperv bits for some OS
+        if self.osinfo.broken_uefi_with_hyperv():
+            self.features.hyperv_relaxed = None
+            self.features.hyperv_vapic = None
+            self.features.hyperv_spinlocks = None
+            self.features.hyperv_spinlocks_retries = None
+            for i in self.clock.timers:
+                if i.name == "hypervclock":
+                    self.clock.timers.remove(i)
+
+    def has_spice(self):
+        for gfx in self.devices.graphics:
+            if gfx.type == gfx.TYPE_SPICE:
+                return True
+
+    def has_gl(self):
+        for gfx in self.devices.graphics:
+            if gfx.gl:
+                return True
+
+    def has_listen_none(self):
+        for gfx in self.devices.graphics:
+            listen = gfx.get_first_listen_type()
+            if listen and listen == "none":
+                return True
+        return False
+
+    def is_full_os_container(self):
+        if not self.os.is_container():
+            return False
+        for fs in self.devices.filesystem:
+            if fs.target == "/":
+                return True
+        return False
+
+    def hyperv_supported(self):
+        if not self.osinfo.is_windows():
+            return False
+        if (self.os.loader_type == "pflash" and
+            self.osinfo.broken_uefi_with_hyperv()):
+            return False
+        return True
+
+    def lookup_domcaps(self):
+        # We need to regenerate domcaps cache if any of these values change
+        def _compare(domcaps):
+            if self.os.machine and self.os.machine != domcaps.machine:
+                return False
+            if self.type and self.type != domcaps.domain:
+                return False
+            if self.os.arch and self.os.arch != domcaps.arch:
+                return False
+            if self.emulator and self.emulator != domcaps.path:
+                return False
+            return True
+
+        if not self._domcaps or not _compare(self._domcaps):
+            self._domcaps = DomainCapabilities.build_from_guest(self)
+        return self._domcaps
+
+    def lookup_capsinfo(self):
+        # We need to regenerate capsinfo cache if any of these values change
+        def _compare(capsinfo):
+            if self.type and self.type != capsinfo.hypervisor_type:
+                return False
+            if self.os.os_type and self.os.os_type != capsinfo.os_type:
+                return False
+            if self.os.arch and self.os.arch != capsinfo.arch:
+                return False
+            if self.os.machine and self.os.machine not in capsinfo.machines:
+                return False
+            return True
+
+        if not self._capsinfo or not _compare(self._capsinfo):
+            self._capsinfo = self.conn.caps.guest_lookup(
+                os_type=self.os.os_type,
+                arch=self.os.arch,
+                typ=self.type,
+                machine=self.os.machine)
+        return self._capsinfo
+
+    def set_capabilities_defaults(self, capsinfo=None):
+        if capsinfo:
+            self._capsinfo = capsinfo
+        else:
+            capsinfo = self.lookup_capsinfo()
+        wants_default_type = not self.type and not self.os.os_type
+
+        self.type = capsinfo.hypervisor_type
+        self.os.os_type = capsinfo.os_type
+        self.os.arch = capsinfo.arch
+        if not self.os.loader:
+            self.os.loader = capsinfo.loader
+        if (not self.emulator and
+            not self.os.is_xenpv() and
+            not self.type == "vz"):
+            self.emulator = capsinfo.emulator
+        if not self.os.machine:
+            self.os.machine = Guest.get_recommended_machine(capsinfo)
+
+        if (wants_default_type and
+            self.conn.is_qemu() and
+            self.os.is_x86() and
+            not self.type == "kvm"):
+            logging.warning("KVM acceleration not available, using '%s'",
+                            self.type)
+
+    def set_defaults(self, _guest):
+        if not self.uuid:
+            self.uuid = util.generate_uuid(self.conn)
+        if not self.vcpus:
+            self.vcpus = 1
+
+        self.set_capabilities_defaults()
+
+        self._set_default_machine()
+        self._set_default_uefi()
+
+        self._add_default_graphics()
+        self._add_default_video_device()
+        self._add_default_input_device()
+        self._add_default_console_device()
+        self._add_default_usb_controller()
+        self._add_default_channels()
+        self._add_default_rng()
+
+        self.clock.set_defaults(self)
+        self.cpu.set_defaults(self)
+        self.features.set_defaults(self)
+        for seclabel in self.seclabels:
+            seclabel.set_defaults(self)
+        self.pm.set_defaults(self)
+        self.os.set_defaults(self)
+
+        for dev in self.devices.get_all():
+            dev.set_defaults(self)
+
+        self._add_implied_controllers()
+        self._add_spice_devices()
 
 
-    def check_uefi_secure(self):
-        """
-        If the firmware name contains "secboot" it is probably build
-        with SMM feature required so we need to enable that feature,
-        otherwise the firmware may fail to load.  True secure boot is
-        currently supported only on x86 architecture and with q35 with
-        SMM feature enabled so change the machine to q35 as well.
-        To actually enforce the secure boot for the guest if Secure Boot
-        Mode is configured we need to enable loader secure feature.
-        """
+    ########################
+    # Private xml routines #
+    ########################
 
-        if not self.os.is_x86():
+    def _set_default_machine(self):
+        if self.os.machine:
             return
 
-        if "secboot" not in self.os.loader:
+        capsinfo = self.lookup_capsinfo()
+
+        if (self.os.is_x86() and
+            self.conn.is_qemu() and
+            "q35" in capsinfo.machines and
+            self.conn.check_support(self.conn.SUPPORT_QEMU_Q35_DEFAULT) and
+            self.osinfo.supports_chipset_q35()):
+            self.os.machine = "q35"
             return
 
-        if (not self.conn.check_support(self.conn.SUPPORT_DOMAIN_FEATURE_SMM) or
-            not self.conn.check_support(self.conn.SUPPORT_DOMAIN_LOADER_SECURE)):
-            return
+        default = capsinfo.machines and capsinfo.machines[0] or None
+        self.os.machine = default
 
-        self.features.smm = True
-        self.os.loader_secure = True
-        self.os.machine = "q35"
 
-    ###################
-    # Device defaults #
-    ###################
-
-    def set_install_defaults(self):
-        """
-        Allow API users to set defaults ahead of time if they want it.
-        Used by vmmDomainVirtinst so the 'Customize before install' dialog
-        shows accurate values.
-
-        If the user doesn't explicitly call this, it will be called by
-        start_install()
-        """
-        if self._defaults_are_set:
-            return
-
-        self._set_defaults()
-        self._defaults_are_set = True
-
-    def stable_defaults(self, *args, **kwargs):
-        return self.conn.stable_defaults(self.emulator, *args, **kwargs)
+    def _set_default_uefi(self):
+        if (self.prefers_uefi() and
+            not self.os.kernel and
+            not self.os.loader and
+            self.os.loader_ro is None and
+            self.os.nvram is None):
+            try:
+                path = self.get_uefi_path()
+                self.set_uefi_path(path)
+            except RuntimeError as e:
+                logging.debug("Error setting UEFI default",
+                    exc_info=True)
+                logging.warning("Couldn't configure UEFI: %s", e)
+                logging.warning("Your VM may not boot successfully.")
 
     def _usb_disabled(self):
         controllers = [c for c in self.devices.controller if
@@ -586,7 +550,7 @@ class Guest(XMLBuilder):
             return False
         return all([c.model == "none" for c in controllers])
 
-    def add_default_input_device(self):
+    def _add_default_input_device(self):
         if self.os.is_container():
             return
         if self.devices.input:
@@ -598,8 +562,8 @@ class Guest(XMLBuilder):
 
         usb_tablet = False
         usb_keyboard = False
-        if self.os.is_x86():
-            usb_tablet = self._os_object.supports_usbtablet()
+        if self.os.is_x86() and not self.os.is_xenpv():
+            usb_tablet = self.osinfo.supports_usbtablet()
         if self.os.is_arm_machvirt():
             usb_tablet = True
             usb_keyboard = True
@@ -615,7 +579,7 @@ class Guest(XMLBuilder):
             dev.bus = "usb"
             self.add_device(dev)
 
-    def add_default_console_device(self):
+    def _add_default_console_device(self):
         if self.skip_default_console:
             return
         if self.devices.console or self.devices.serial:
@@ -627,7 +591,7 @@ class Guest(XMLBuilder):
             dev.target_type = "sclp"
         self.add_device(dev)
 
-    def add_default_video_device(self):
+    def _add_default_video_device(self):
         if self.os.is_container():
             return
         if self.devices.video:
@@ -636,37 +600,38 @@ class Guest(XMLBuilder):
             return
         self.add_device(DeviceVideo(self.conn))
 
-    def add_default_usb_controller(self):
-        if self.os.is_container():
-            return
+    def _add_default_usb_controller(self):
         if any([d.type == "usb" for d in self.devices.controller]):
             return
+        if not self.conn.is_qemu() and not self.conn.is_test():
+            return
 
+        qemu_usb3 = self.conn.check_support(self.conn.SUPPORT_CONN_QEMU_XHCI)
         usb2 = False
         usb3 = False
         if self.os.is_x86():
-            usb2 = True
-        elif (self.os.is_arm_machvirt() and
-              self.conn.check_support(
-                  self.conn.SUPPORT_CONN_MACHVIRT_PCI_DEFAULT)):
-            usb3 = True
+            usb3 = bool(self.osinfo.supports_usb3() and qemu_usb3)
+            usb2 = not usb3
+        elif self.os.is_arm_machvirt():
+            # For machvirt, we always assume OS supports usb3
+            if (qemu_usb3 and
+                self.conn.check_support(
+                        self.conn.SUPPORT_CONN_MACHVIRT_PCI_DEFAULT)):
+                usb3 = True
+        elif self.os.is_pseries():
+            # For pseries, we always assume OS supports usb3
+            if qemu_usb3:
+                usb3 = True
 
-
-        if not usb2 and not usb3:
-            return
 
         if usb2:
-            if not self.conn.check_support(
-                    self.conn.SUPPORT_CONN_DEFAULT_USB2):
-                return
             for dev in DeviceController.get_usb2_controllers(self.conn):
                 self.add_device(dev)
-
-        if usb3:
+        elif usb3:
             self.add_device(
                 DeviceController.get_usb3_controller(self.conn, self))
 
-    def add_default_channels(self):
+    def _add_default_channels(self):
         if self.skip_default_channel:
             return
         if self.devices.channel:
@@ -676,7 +641,7 @@ class Guest(XMLBuilder):
             return
 
         if (self.conn.is_qemu() and
-            self._os_object.supports_qemu_ga() and
+            self._supports_virtioserial() and
             self.conn.check_support(self.conn.SUPPORT_CONN_AUTOSOCKET)):
             dev = DeviceChannel(self.conn)
             dev.type = "unix"
@@ -684,7 +649,7 @@ class Guest(XMLBuilder):
             dev.target_name = dev.CHANNEL_NAME_QEMUGA
             self.add_device(dev)
 
-    def add_default_graphics(self):
+    def _add_default_graphics(self):
         if self.skip_default_graphics:
             return
         if self.devices.graphics:
@@ -695,7 +660,7 @@ class Guest(XMLBuilder):
             return
         self.add_device(DeviceGraphics(self.conn))
 
-    def add_default_rng(self):
+    def _add_default_rng(self):
         if self.skip_default_rng:
             return
         if self.devices.rng:
@@ -706,281 +671,12 @@ class Guest(XMLBuilder):
             return
 
         if (self.conn.is_qemu() and
-            self._os_object.supports_virtiorng() and
+            self.osinfo.supports_virtiorng() and
             self.conn.check_support(self.conn.SUPPORT_CONN_RNG_URANDOM)):
             dev = DeviceRng(self.conn)
             dev.type = "random"
             dev.device = "/dev/urandom"
             self.add_device(dev)
-
-    def add_default_devices(self):
-        self.add_default_graphics()
-        self.add_default_video_device()
-        self.add_default_input_device()
-        self.add_default_console_device()
-        self.add_default_usb_controller()
-        self.add_default_channels()
-        self.add_default_rng()
-
-    def _add_install_cdrom(self):
-        if self._install_cdrom_device:
-            return
-        if not self.installer.needs_cdrom():
-            return
-
-        dev = DeviceDisk(self.conn)
-        dev.device = dev.DEVICE_CDROM
-        setattr(dev, "installer_media", not self.installer.livecd)
-        self._install_cdrom_device = dev
-        self.add_device(dev)
-
-    def _remove_cdrom_install_media(self):
-        for dev in self.devices.disk:
-            # Keep the install cdrom device around, but with no media attached.
-            # But only if we are installing windows which has a multi stage
-            # install.
-            if (dev.is_cdrom() and
-                getattr(dev, "installer_media", False) and
-                not self._os_object.is_windows()):
-                dev.path = None
-
-    def _set_defaults(self):
-        self._add_install_cdrom()
-
-        # some options check for has_spice() which is resolved after this:
-        self._set_graphics_defaults()
-
-        self._set_clock_defaults()
-        self._set_emulator_defaults()
-        self._set_cpu_defaults()
-        self._set_feature_defaults()
-        self._set_pm_defaults()
-
-        for dev in self.devices.get_all():
-            dev.set_defaults(self)
-        self._check_address_multi()
-        self._set_disk_defaults()
-        self._add_implied_controllers()
-        self._set_net_defaults()
-        self._set_video_defaults()
-        self._set_sound_defaults()
-        self._set_panic_defaults()
-
-    def _is_full_os_container(self):
-        if not self.os.is_container():
-            return False
-        for fs in self.devices.filesystem:
-            if fs.target == "/":
-                return True
-        return False
-
-    def _set_osxml_defaults(self):
-        if self.os.is_container() and not self.os.init:
-            if self._is_full_os_container():
-                self.os.init = "/sbin/init"
-            self.os.init = self.os.init or "/bin/sh"
-
-        if not self.os.loader and self.os.is_hvm() and self.type == "xen":
-            self.os.loader = "/usr/lib/xen/boot/hvmloader"
-        if self.os.kernel or self.os.init:
-            self.os.bootorder = []
-
-    def _set_clock_defaults(self):
-        if not self.os.is_hvm():
-            return
-
-        if self.clock.offset is None:
-            self.clock.offset = self._os_object.get_clock()
-
-        if self.clock.timers:
-            return
-        if not self.os.is_x86():
-            return
-        if not self.conn.check_support(
-                self.conn.SUPPORT_CONN_ADVANCED_CLOCK):
-            return
-
-        # Set clock policy that maps to qemu options:
-        #   -no-hpet -no-kvm-pit-reinjection -rtc driftfix=slew
-        #
-        # hpet: Is unneeded and has a performance penalty
-        # pit: While it has no effect on windows, it doesn't hurt and
-        #   is beneficial for linux
-        #
-        # If libvirt/qemu supports it and using a windows VM, also
-        # specify hypervclock.
-        #
-        # This is what has been recommended by the RH qemu guys :)
-
-        rtc = self.clock.timers.add_new()
-        rtc.name = "rtc"
-        rtc.tickpolicy = "catchup"
-
-        pit = self.clock.timers.add_new()
-        pit.name = "pit"
-        pit.tickpolicy = "delay"
-
-        hpet = self.clock.timers.add_new()
-        hpet.name = "hpet"
-        hpet.present = False
-
-        hv_clock = self.conn.check_support(self.conn.SUPPORT_CONN_HYPERV_CLOCK)
-        hv_clock_rhel = self.conn.check_support(self.conn.SUPPORT_CONN_HYPERV_CLOCK_RHEL)
-
-        if (self._os_object.is_windows() and self._hyperv_supported() and
-            (hv_clock or (self.stable_defaults() and hv_clock_rhel))):
-            hyperv = self.clock.timers.add_new()
-            hyperv.name = "hypervclock"
-            hyperv.present = True
-
-    def _set_emulator_defaults(self):
-        if self.os.is_xenpv() or self.type == "vz":
-            self.emulator = None
-            return
-
-        if self.emulator:
-            return
-
-        if self.os.is_hvm() and self.type == "xen":
-            if self.conn.caps.host.cpu.arch == "x86_64":
-                self.emulator = "/usr/lib64/xen/bin/qemu-dm"
-            else:
-                self.emulator = "/usr/lib/xen/bin/qemu-dm"
-
-    def _set_cpu_x86_kvm_default(self):
-        if self.os.arch != self.conn.caps.host.cpu.arch:
-            return
-
-        self.cpu.set_special_mode(self.x86_cpu_default)
-        if self.x86_cpu_default != self.cpu.SPECIAL_MODE_HOST_MODEL_ONLY:
-            return
-        if not self.cpu.model:
-            return
-
-        # It's possible that the value HOST_MODEL_ONLY gets from
-        # <capabilities> is not actually supported by qemu/kvm
-        # combo which will be reported in <domainCapabilities>
-        domcaps = DomainCapabilities.build_from_guest(self)
-        domcaps_mode = domcaps.cpu.get_mode("custom")
-        if not domcaps_mode:
-            return
-
-        cpu_model = domcaps_mode.get_model(self.cpu.model)
-        if cpu_model and cpu_model.usable:
-            return
-
-        logging.debug("Host capabilities CPU '%s' is not supported "
-            "according to domain capabilities. Unsetting CPU model",
-            self.cpu.model)
-        self.cpu.model = None
-
-    def _set_cpu_defaults(self):
-        self.cpu.set_topology_defaults(self.vcpus)
-
-        if not self.conn.is_test() and not self.conn.is_qemu():
-            return
-        if (self.cpu.get_xml_config().strip() or
-            self.cpu.special_mode_was_set):
-            # User already configured CPU
-            return
-
-        if self.os.is_arm_machvirt() and self.type == "kvm":
-            self.cpu.mode = self.cpu.SPECIAL_MODE_HOST_PASSTHROUGH
-
-        elif self.os.is_arm64() and self.os.is_arm_machvirt():
-            # -M virt defaults to a 32bit CPU, even if using aarch64
-            self.cpu.model = "cortex-a57"
-
-        elif self.os.is_x86() and self.type == "kvm":
-            self._set_cpu_x86_kvm_default()
-
-            if self._os_object.broken_x2apic():
-                self.cpu.add_feature("x2apic", policy="disable")
-
-    def _hyperv_supported(self):
-        if (self.os.loader_type == "pflash" and
-            self.os_variant in ("win2k8r2", "win7")):
-            return False
-        return True
-
-    def update_defaults(self):
-        # This is used only by virt-manager to reset any defaults that may have
-        # changed through manual intervention via the customize wizard.
-
-        # UEFI doesn't work with hyperv bits
-        if not self._hyperv_supported():
-            self.features.hyperv_relaxed = None
-            self.features.hyperv_vapic = None
-            self.features.hyperv_spinlocks = None
-            self.features.hyperv_spinlocks_retries = None
-            for i in self.clock.timers:
-                if i.name == "hypervclock":
-                    self.clock.remove_timer(i)
-
-    def _set_feature_defaults(self):
-        if self.os.is_container():
-            self.features.acpi = None
-            self.features.apic = None
-            self.features.pae = None
-            if self._is_full_os_container() and self.type != "vz":
-                self.features.privnet = True
-            return
-
-        if not self.os.is_hvm():
-            return
-
-        default = True
-        if (self._os_object.need_old_xen_disable_acpi() and
-            not self.conn.check_support(support.SUPPORT_CONN_CAN_ACPI)):
-            default = False
-
-        if self.features.acpi == "default":
-            if default:
-                self.features.acpi = self.capsinfo.guest.supports_acpi()
-            else:
-                self.features.acpi = False
-        if self.features.apic == "default":
-            self.features.apic = self.capsinfo.guest.supports_apic()
-        if self.features.pae == "default":
-            if (self.os.is_hvm() and
-                self.type == "xen" and
-                self.os.arch == "x86_64"):
-                self.features.pae = True
-            else:
-                self.features.pae = self.capsinfo.guest.supports_pae()
-
-        if (self.features.vmport == "default" and
-            self.os.is_x86() and
-            self.has_spice() and
-            self.conn.check_support(self.conn.SUPPORT_CONN_VMPORT)):
-            self.features.vmport = False
-
-        if (self._os_object.is_windows() and
-            self._hyperv_supported() and
-            self.conn.check_support(self.conn.SUPPORT_CONN_HYPERV_VAPIC)):
-            if self.features.hyperv_relaxed is None:
-                self.features.hyperv_relaxed = True
-            if self.features.hyperv_vapic is None:
-                self.features.hyperv_vapic = True
-            if self.features.hyperv_spinlocks is None:
-                self.features.hyperv_spinlocks = True
-            if self.features.hyperv_spinlocks_retries is None:
-                self.features.hyperv_spinlocks_retries = 8191
-
-    def _set_pm_defaults(self):
-        # When the suspend feature is exposed to VMs, an ACPI shutdown
-        # event triggers a suspend in the guest, which causes a lot of
-        # user confusion (especially compounded with the face that suspend
-        # is often buggy so VMs can get hung, etc).
-        #
-        # We've been disabling this in virt-manager for a while, but lets
-        # do it here too for consistency.
-        if (self.os.is_x86() and
-            self.conn.check_support(self.conn.SUPPORT_CONN_PM_DISABLE)):
-            if self.pm.suspend_to_mem is None:
-                self.pm.suspend_to_mem = False
-            if self.pm.suspend_to_disk is None:
-                self.pm.suspend_to_disk = False
 
     def _add_implied_controllers(self):
         has_spapr_scsi = False
@@ -1001,6 +697,7 @@ class Guest(XMLBuilder):
                     ctrl = DeviceController(self.conn)
                     ctrl.type = "scsi"
                     ctrl.address.set_addrstr("spapr-vio")
+                    ctrl.set_defaults(self)
                     self.add_device(ctrl)
                     break
 
@@ -1013,186 +710,23 @@ class Guest(XMLBuilder):
                     ctrl = DeviceController(self.conn)
                     ctrl.type = "scsi"
                     ctrl.model = "virtio-scsi"
+                    ctrl.set_defaults(self)
                     self.add_device(ctrl)
                     break
-
-
-    def _check_address_multi(self):
-        addresses = {}
-        for d in self.devices.get_all():
-            if d.address.type != d.address.ADDRESS_TYPE_PCI:
-                continue
-            if None in [d.address.domain, d.address.bus, d.address.slot]:
-                continue
-
-            addr = d.address
-            addrstr = "%d%d%d" % (d.address.domain,
-                                  d.address.bus,
-                                  d.address.slot)
-
-            if addrstr not in addresses:
-                addresses[addrstr] = {}
-            if addr.function in addresses[addrstr]:
-                raise ValueError(_("Duplicate address for devices %s and %s") %
-                                 (str(d), str(addresses[addrstr][addr.function])))
-            addresses[addrstr][addr.function] = d
-
-        for devs in list(addresses.values()):
-            if len(devs) > 1 and 0 in devs:
-                devs[0].address.multifunction = True
-
-    def _supports_virtio(self, os_support):
-        if not self.conn.is_qemu():
-            return False
-
-        # These _only_ support virtio so don't check the OS
-        if (self.os.is_arm_machvirt() or
-            self.os.is_s390x() or
-            self.os.is_pseries()):
-            return True
-
-        if not os_support:
-            return False
-
-        if self.os.is_x86():
-            return True
-
-        if (self.os.is_arm_vexpress() and
-            self.os.dtb and
-            self._os_object.supports_virtiommio() and
-            self.conn.check_support(support.SUPPORT_CONN_VIRTIO_MMIO)):
-            return True
-
-        return False
-
-    def _set_disk_defaults(self):
-        disks = self.devices.disk
-
-        def set_disk_bus(d):
-            if d.is_floppy():
-                d.bus = "fdc"
-                return
-            if self.os.is_xenpv():
-                d.bus = "xen"
-                return
-            if not self.os.is_hvm():
-                # This likely isn't correct, but it's kind of a catch all
-                # for virt types we don't know how to handle.
-                d.bus = "ide"
-                return
-
-            if self.os.is_arm_machvirt():
-                # We prefer virtio-scsi for machvirt, gets us hotplug
-                d.bus = "scsi"
-            elif (d.is_disk() and
-                  self._supports_virtio(self._os_object.supports_virtiodisk())):
-                d.bus = "virtio"
-            elif self.os.is_pseries() and d.is_cdrom():
-                d.bus = "scsi"
-            elif self.os.is_arm():
-                d.bus = "sd"
-            elif self.os.is_q35():
-                d.bus = "sata"
-            else:
-                d.bus = "ide"
-
-        # Generate disk targets
-        used_targets = []
-        for disk in disks:
-            if not disk.bus:
-                set_disk_bus(disk)
-
-        for disk in disks:
-            if (disk.target and
-                not getattr(disk, "cli_generated_target", False)):
-                used_targets.append(disk.target)
-            else:
-                disk.cli_generated_target = False
-                used_targets.append(disk.generate_target(used_targets))
-
-    def _set_net_defaults(self):
-        net_model = None
-        if not self.os.is_hvm():
-            net_model = None
-        elif self._supports_virtio(self._os_object.supports_virtionet()):
-            net_model = "virtio"
-        else:
-            net_model = self._os_object.default_netmodel()
-
-        if net_model:
-            for net in self.devices.interface:
-                if not net.model:
-                    net.model = net_model
-
-    def _set_sound_defaults(self):
-        if self.conn.check_support(
-                support.SUPPORT_CONN_SOUND_ICH6):
-            default = "ich6"
-        elif self.conn.check_support(
-                support.SUPPORT_CONN_SOUND_AC97):
-            default = "ac97"
-        else:
-            default = "es1370"
-
-        for sound in self.devices.sound:
-            if sound.model == sound.MODEL_DEFAULT:
-                sound.model = default
-
-    def _set_graphics_defaults(self):
-        def _set_type(gfx):
-            gtype = self.default_graphics_type
-            logging.debug("Using default_graphics=%s", gtype)
-            if (gtype == "spice" and not
-                (self.conn.caps.host.cpu.arch in ["i686", "x86_64"] and
-                 self.conn.check_support(
-                     self.conn.SUPPORT_CONN_GRAPHICS_SPICE))):
-                logging.debug("spice requested but HV doesn't support it. "
-                              "Using vnc.")
-                gtype = "vnc"
-
-            gfx.type = gtype
-
-        for dev in self.devices.graphics:
-            if dev.type == "default":
-                _set_type(dev)
-
-            if (dev.type == "spice" and
-                not self.conn.is_remote() and
-                self.conn.check_support(
-                    self.conn.SUPPORT_CONN_SPICE_COMPRESSION)):
-                logging.debug("Local connection, disabling spice image "
-                    "compression.")
-                if dev.image_compression is None:
-                    dev.image_compression = "off"
-
-            if dev.type == "spice" and dev.gl:
-                if not self.conn.check_support(
-                        self.conn.SUPPORT_CONN_SPICE_GL):
-                    raise ValueError(_("Host does not support spice GL"))
-
-                # If spice GL but rendernode wasn't specified, hardcode
-                # the first one
-                if not dev.rendernode and self.conn.check_support(
-                        self.conn.SUPPORT_CONN_SPICE_RENDERNODE):
-                    for nodedev in self.conn.fetch_all_nodedevs():
-                        if (nodedev.device_type != 'drm' or
-                            nodedev.drm_type != 'render'):
-                            continue
-                        dev.rendernode = nodedev.get_devnode().path
-                        break
 
     def _add_spice_channels(self):
         if self.skip_default_channel:
             return
-
         for chn in self.devices.channel:
             if chn.type == chn.TYPE_SPICEVMC:
                 return
+        if not self._supports_virtioserial():
+            return
 
-        if self.conn.check_support(self.conn.SUPPORT_CONN_CHAR_SPICEVMC):
-            agentdev = DeviceChannel(self.conn)
-            agentdev.type = agentdev.TYPE_SPICEVMC
-            self.add_device(agentdev)
+        dev = DeviceChannel(self.conn)
+        dev.type = DeviceChannel.TYPE_SPICEVMC
+        dev.set_defaults(self)
+        self.add_device(dev)
 
     def _add_spice_sound(self):
         if self.skip_default_sound:
@@ -1205,7 +739,9 @@ class Guest(XMLBuilder):
                 self.os.is_arm_machvirt):
             return
 
-        self.add_device(DeviceSound(self.conn))
+        dev = DeviceSound(self.conn)
+        dev.set_defaults(self)
+        self.add_device(dev)
 
     def _add_spice_usbredir(self):
         if self.skip_default_usbredir:
@@ -1213,8 +749,6 @@ class Guest(XMLBuilder):
         if self.devices.redirdev:
             return
         if not self.os.is_x86():
-            return
-        if not self.conn.check_support(self.conn.SUPPORT_CONN_USBREDIR):
             return
 
         # If we use 4 devices here, we fill up all the emulated USB2 slots,
@@ -1224,42 +758,18 @@ class Guest(XMLBuilder):
             dev = DeviceRedirdev(self.conn)
             dev.bus = "usb"
             dev.type = "spicevmc"
+            dev.set_defaults(self)
             self.add_device(dev)
 
-    def has_spice(self):
-        for gfx in self.devices.graphics:
-            if gfx.type == gfx.TYPE_SPICE:
-                return True
+    def _add_spice_devices(self):
+        if not self.has_spice():
+            return
 
-    def has_gl(self):
-        for gfx in self.devices.graphics:
-            if gfx.gl:
-                return True
+        if (self.features.vmport is None and
+            self.os.is_x86() and
+            self.conn.check_support(self.conn.SUPPORT_CONN_VMPORT)):
+            self.features.vmport = False
 
-    def has_listen_none(self):
-        for gfx in self.devices.graphics:
-            listen = gfx.get_first_listen_type()
-            if listen and listen == "none":
-                return True
-        return False
-
-    def _set_video_defaults(self):
-        if self.has_spice():
-            self._add_spice_channels()
-            self._add_spice_sound()
-            self._add_spice_usbredir()
-
-        video_model = self._os_object.default_videomodel(self)
-        if self.os.is_arm_machvirt():
-            video_model = "virtio"
-
-        for video in self.devices.video:
-            if video.model == video.MODEL_DEFAULT:
-                video.model = video_model
-                if video.model == 'virtio' and self.has_gl():
-                    video.accel3d = True
-
-    def _set_panic_defaults(self):
-        for panic in self.devices.panic:
-            if panic.model == DevicePanic.MODEL_DEFAULT:
-                panic.model = DevicePanic.get_default_model(self.os)
+        self._add_spice_channels()
+        self._add_spice_sound()
+        self._add_spice_usbredir()

@@ -149,10 +149,7 @@ class Cloner(object):
     def set_clone_macs(self, mac):
         maclist = util.listify(mac)
         for m in maclist:
-            msg = DeviceInterface.is_conflict_net(self.conn, m)[1]
-            if msg:
-                raise RuntimeError(msg)
-
+            DeviceInterface.is_conflict_net(self.conn, m)
         self._clone_macs = maclist
     def get_clone_macs(self):
         return self._clone_macs
@@ -269,7 +266,6 @@ class Cloner(object):
 
         self._guest = Guest(self.conn, parsexml=self.original_xml)
         self._guest.id = None
-        self._guest.replace = self.replace
 
         # Pull clonable storage info from the original xml
         self._original_disks = self._get_original_disks_info()
@@ -427,14 +423,16 @@ class Cloner(object):
         # For guest agent channel, remove a path to generate a new one with
         # new guest name
         for channel in self._guest.devices.channel:
-            if channel.type == DeviceChannel.TYPE_UNIX:
+            if (channel.type == DeviceChannel.TYPE_UNIX and
+                channel.target_name and channel.source_path and
+                channel.target_name in channel.source_path):
                 channel.source_path = None
 
         if self._guest.os.nvram:
             self._prepare_nvram()
 
         # Save altered clone xml
-        self._clone_xml = self._guest.get_xml_config()
+        self._clone_xml = self._guest.get_xml()
         logging.debug("Clone guest xml is\n%s", self._clone_xml)
 
     def start_duplicate(self, meter=None):
@@ -456,9 +454,9 @@ class Cloner(object):
 
             if self.preserve:
                 for dst_dev in self.clone_disks:
-                    dst_dev.setup(meter=meter)
+                    dst_dev.build_storage(meter)
                 if self._nvram_disk:
-                    self._nvram_disk.setup(meter=meter)
+                    self._nvram_disk.build_storage(meter)
         except Exception as e:
             logging.debug("Duplicate failed: %s", str(e))
             if dom:

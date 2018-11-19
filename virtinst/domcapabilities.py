@@ -95,17 +95,28 @@ class _CPUModel(XMLBuilder):
     XML_NAME = "model"
     model = XMLProperty(".")
     usable = XMLProperty("./@usable", is_yesno=True)
+    fallback = XMLProperty("./@fallback")
+
+
+class _CPUFeature(XMLBuilder):
+    XML_NAME = "feature"
+    name = XMLProperty("./@name")
+    policy = XMLProperty("./@policy")
 
 
 class _CPUMode(XMLBuilder):
     XML_NAME = "mode"
     name = XMLProperty("./@name")
-    models = XMLChildProperty(_CPUModel)
+    supported = XMLProperty("./@supported", is_yesno=True)
+    vendor = XMLProperty("./vendor")
 
+    models = XMLChildProperty(_CPUModel)
     def get_model(self, name):
         for model in self.models:
             if model.model == name:
                 return model
+
+    features = XMLChildProperty(_CPUFeature)
 
 
 class _CPU(XMLBuilder):
@@ -149,16 +160,22 @@ class DomainCapabilities(XMLBuilder):
     # only use this info to do things automagically for the user, it shouldn't
     # validate anything the user explicitly enters.
     _uefi_arch_patterns = {
+        "i686": [
+            r".*ovmf-ia32.*",  # fedora, gerd's firmware repo
+        ],
         "x86_64": [
-            ".*OVMF_CODE\.fd",  # RHEL
-            ".*ovmf-x64/OVMF.*\.fd",  # gerd's firmware repo
-            ".*ovmf-x86_64-.*",  # SUSE
-            ".*ovmf.*", ".*OVMF.*",  # generic attempt at a catchall
+            r".*OVMF_CODE\.fd",  # RHEL
+            r".*ovmf-x64/OVMF.*\.fd",  # gerd's firmware repo
+            r".*ovmf-x86_64-.*",  # SUSE
+            r".*ovmf.*", ".*OVMF.*",  # generic attempt at a catchall
         ],
         "aarch64": [
-            ".*AAVMF_CODE\.fd",  # RHEL
-            ".*aarch64/QEMU_EFI.*",  # gerd's firmware repo
-            ".*aarch64.*",  # generic attempt at a catchall
+            r".*AAVMF_CODE\.fd",  # RHEL
+            r".*aarch64/QEMU_EFI.*",  # gerd's firmware repo
+            r".*aarch64.*",  # generic attempt at a catchall
+        ],
+        "armv7l": [
+            r".*arm/QEMU_EFI.*",  # fedora, gerd's firmware repo
         ],
     }
 
@@ -206,11 +223,23 @@ class DomainCapabilities(XMLBuilder):
         return ("readonly" in self.os.loader.enum_names() and
                 "yes" in self.os.loader.get_enum("readonly").get_values())
 
+    def supports_safe_host_model(self):
+        """
+        Return True if domcaps reports support for cpu mode=host-model.
+        host-model infact predates this support, however it wasn't
+        general purpose safe prior to domcaps advertisement
+        """
+        return [(m.name == "host-model" and m.supported)
+                for m in self.cpu.modes]
+
 
     XML_NAME = "domainCapabilities"
     os = XMLChildProperty(_OS, is_single=True)
     cpu = XMLChildProperty(_CPU, is_single=True)
     devices = XMLChildProperty(_Devices, is_single=True)
+    features = XMLChildProperty(_Features, is_single=True)
 
     arch = XMLProperty("./arch")
-    features = XMLChildProperty(_Features, is_single=True)
+    domain = XMLProperty("./domain")
+    machine = XMLProperty("./machine")
+    path = XMLProperty("./path")

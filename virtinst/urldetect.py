@@ -28,8 +28,8 @@ class _DistroCache(object):
         self.treeinfo_name = None
 
         self.suse_content = None
+        self.checked_for_suse_content = False
         self.debian_media_type = None
-
 
     def acquire_file_content(self, path):
         if path not in self._filecache:
@@ -105,22 +105,36 @@ class _DistroCache(object):
                 image_type = "xen"
             return self.treeinfo.get("images-%s" % image_type, media_name)
 
-        kernel_paths = []
-        boot_iso_paths = []
-
         try:
-            kernel_paths.append(
-                (_get_treeinfo_path("kernel"), _get_treeinfo_path("initrd")))
+            return [(_get_treeinfo_path("kernel"),
+                     _get_treeinfo_path("initrd"))]
         except Exception:
             logging.debug("Failed to parse treeinfo kernel/initrd",
                     exc_info=True)
+            return []
 
-        try:
-            boot_iso_paths.append(_get_treeinfo_path("boot.iso"))
-        except Exception:
-            logging.debug("Failed to parse treeinfo boot.iso", exc_info=True)
+    def split_version(self):
+        verstr = self.treeinfo_version
+        def _safeint(c):
+            try:
+                return int(c)
+            except Exception:
+                return 0
 
-        return kernel_paths, boot_iso_paths
+        # Parse a string like 6.9 or 7.4 into its two parts
+        # centos altarch's have just version=7
+        update = 0
+        version = _safeint(verstr)
+        if verstr.count(".") == 1:
+            version = _safeint(verstr.split(".")[0])
+            update = _safeint(verstr.split(".")[1])
+
+        logging.debug("converted verstr=%s to version=%s update=%s",
+                verstr, version, update)
+        return version, update
+
+    def fetcher_is_iso(self):
+        return self._fetcher.is_iso()
 
 
 class _SUSEContent(object):
@@ -212,9 +226,10 @@ class _SUSEContent(object):
         # Special case, parse version out of a line like this
         # cpe:/o:opensuse:opensuse:13.2,openSUSE
         if (not distro_version and
-            re.match("^.*:.*,openSUSE$", self.content_dict["DISTRO"])):
+            re.match("^.*:.*,openSUSE*", self.content_dict["DISTRO"])):
             distro_version = self.content_dict["DISTRO"].rsplit(
                     ",", 1)[0].strip().rsplit(":")[4]
+        distro_version = distro_version.strip()
 
         if "Enterprise" in self.product_name or "SLES" in self.product_name:
             sle_version = self.product_name.strip().rsplit(' ')[4]
@@ -231,19 +246,19 @@ def getDistroStore(guest, fetcher):
 
     arch = guest.os.arch
     _type = guest.os.os_type
-    urldistro = OSDB.lookup_os(guest.os_variant).urldistro
+    osobj = guest.osinfo
     stores = _allstores[:]
     cache = _DistroCache(fetcher)
 
     # If user manually specified an os_distro, bump it's URL class
     # to the top of the list
-    if urldistro:
+    if osobj.distro:
         logging.debug("variant=%s has distro=%s, looking for matching "
                       "distro store to prioritize",
-                      guest.os_variant, urldistro)
+                      osobj.name, osobj.distro)
         found_store = None
         for store in stores:
-            if store.urldistro == urldistro:
+            if osobj.distro in store.matching_distros:
                 found_store = store
 
         if found_store:
@@ -288,9 +303,8 @@ class Distro(object):
     ISO image, or a kernel+initrd  pair for a particular OS distribution
     """
     PRETTY_NAME = None
-    urldistro = None
+    matching_distros = []
 
-    _boot_iso_paths = None
     _kernel_paths = None
 
     def __init__(self, fetcher, arch, vmtype, cache):
@@ -337,13 +351,6 @@ class Distro(object):
             os.unlink(kernel)
             raise
 
-    def acquireBootISO(self):
-        for path in self._boot_iso_paths:
-            if self.fetcher.hasFile(path):
-                return self.fetcher.acquireFile(path)
-        raise RuntimeError(_("Could not find boot.iso in %s tree." %
-                           self.PRETTY_NAME))
-
     def get_osdict_info(self):
         """
         Return detected osdict value
@@ -376,13 +383,11 @@ class RedHatDistro(Distro):
     def __init__(self, *args, **kwargs):
         Distro.__init__(self, *args, **kwargs)
 
-        k, b = self.cache.get_treeinfo_media(self.type)
-        self._kernel_paths = k
-        self._boot_iso_paths = b
+        self._kernel_paths = self.cache.get_treeinfo_media(self.type)
 
     def _get_kernel_url_arg(self):
         def _is_old_rhdistro():
-            m = re.match("^.*[^0-9\.]+([0-9\.]+)$", self._os_variant or "")
+            m = re.match(r"^.*[^0-9\.]+([0-9\.]+)$", self._os_variant or "")
             if m:
                 version = float(m.groups()[0])
                 if "fedora" in self._os_variant and version < 19:
@@ -402,7 +407,7 @@ class RedHatDistro(Distro):
 
 class FedoraDistro(RedHatDistro):
     PRETTY_NAME = "Fedora"
-    urldistro = "fedora"
+    matching_distros = ["fedora"]
 
     @classmethod
     def is_valid(cls, cache):
@@ -436,7 +441,7 @@ class FedoraDistro(RedHatDistro):
 
 class RHELDistro(RedHatDistro):
     PRETTY_NAME = "Red Hat Enterprise Linux"
-    urldistro = "rhel"
+    matching_distros = ["rhel"]
     _variant_prefix = "rhel"
 
     @classmethod
@@ -447,33 +452,12 @@ class RHELDistro(RedHatDistro):
         famregex = ".*(Red Hat Enterprise Linux|RHEL).*"
         return cache.treeinfo_family_regex(famregex)
 
-    def _split_rhel_version(self):
-        verstr = self.cache.treeinfo_version
-        def _safeint(c):
-            try:
-                return int(c)
-            except Exception:
-                return 0
-
-        # Parse a string like 6.9 or 7.4 into its two parts
-        # centos altarch's have just version=7
-        update = 0
-        version = _safeint(verstr)
-        if verstr.count(".") == 1:
-            version = _safeint(verstr.split(".")[0])
-            update = _safeint(verstr.split(".")[1])
-
-        logging.debug("converted verstr=%s to version=%s update=%s",
-                verstr, version, update)
-        return version, update
-
     def _detect_version(self):
         if not self.cache.treeinfo_version:
             logging.debug("No treeinfo version? Not setting an os_variant")
             return
 
-        version, update = self._split_rhel_version()
-        self._version_number = version
+        version, update = self.cache.split_version()
 
         # start with example base=rhel7, then walk backwards
         # through the OS list to find the latest os name that matches
@@ -489,7 +473,7 @@ class RHELDistro(RedHatDistro):
 
 class CentOSDistro(RHELDistro):
     PRETTY_NAME = "CentOS"
-    urldistro = "centos"
+    matching_distros = ["centos"]
     _variant_prefix = "centos"
 
     @classmethod
@@ -499,17 +483,19 @@ class CentOSDistro(RHELDistro):
 
 
 class SuseDistro(Distro):
-    PRETTY_NAME = "SUSE"
+    PRETTY_NAME = None
     _suse_regex = []
+    matching_distros = []
+    _variant_prefix = NotImplementedError
+    famregex = NotImplementedError
 
     @classmethod
     def is_valid(cls, cache):
-        famregex = ".*SUSE.*"
-        if cache.treeinfo_family_regex(famregex):
+        if cache.treeinfo_family_regex(cls.famregex):
             return True
 
-        if not cache.suse_content:
-            cache.suse_content = -1
+        if not cache.checked_for_suse_content:
+            cache.checked_for_suse_content = True
             content_str = cache.acquire_file_content("content")
             if content_str is None:
                 return False
@@ -520,7 +506,7 @@ class SuseDistro(Distro):
                 logging.debug("Error parsing SUSE content file: %s", str(e))
                 return False
 
-        if cache.suse_content == -1:
+        if not cache.suse_content:
             return False
         for regex in cls._suse_regex:
             if re.match(regex, cache.suse_content.product_name):
@@ -532,9 +518,7 @@ class SuseDistro(Distro):
 
         if not self.cache.suse_content:
             # This means we matched on treeinfo
-            k, b = self.cache.get_treeinfo_media(self.type)
-            self._kernel_paths = k
-            self._boot_iso_paths = b
+            self._kernel_paths = self.cache.get_treeinfo_media(self.type)
             return
 
         tree_arch = self.cache.suse_content.tree_arch
@@ -548,7 +532,6 @@ class SuseDistro(Distro):
             oldkern += "64"
             oldinit += "64"
 
-        self._boot_iso_paths = ["boot/boot.iso"]
         self._kernel_paths = []
         if self.type == "xen":
             # Matches Opensuse > 10.2 and sles 10
@@ -588,16 +571,16 @@ class SuseDistro(Distro):
             return "opensusetumbleweed"
 
         if int(version) < 10:
-            return self.urldistro + "9"
+            return self._variant_prefix + "9"
 
-        if self.urldistro.startswith(("sles", "sled")):
+        if str(self._variant_prefix).startswith(("sles", "sled")):
             sp_version = ""
             if len(distro_version.split('.', 1)) == 2:
                 sp_version = 'sp' + distro_version.split('.', 1)[1].strip()
 
-            return self.urldistro + version + sp_version
+            return self._variant_prefix + version + sp_version
 
-        return self.urldistro + distro_version
+        return self._variant_prefix + distro_version
 
     def _detect_osdict_from_url(self):
         root = "opensuse"
@@ -614,6 +597,18 @@ class SuseDistro(Distro):
         if re.search("openSUSE Tumbleweed", self.cache.treeinfo_name):
             return "opensusetumbleweed"
 
+        version, update = self.cache.split_version()
+        base = self._variant_prefix + str(version)
+        while update >= 0:
+            tryvar = base
+            # SLE doesn't use '.0' for initial releases in
+            # osinfo-db (sles11, sles12, etc)
+            if update > 0 or not base.startswith('sle'):
+                tryvar += ".%s" % update
+            if OSDB.lookup_os(tryvar):
+                return tryvar
+            update -= 1
+
     def _detect_version(self):
         var = self._detect_from_treeinfo()
         if not var:
@@ -627,25 +622,34 @@ class SuseDistro(Distro):
 
 
 class SLESDistro(SuseDistro):
-    urldistro = "sles"
+    PRETTY_NAME = "SLES"
+    matching_distros = ["sles"]
+    _variant_prefix = "sles"
     _suse_regex = [".*SUSE Linux Enterprise Server*", ".*SUSE SLES*"]
+    famregex = ".*SUSE Linux Enterprise.*"
 
 
 class SLEDDistro(SuseDistro):
-    urldistro = "sled"
+    PRETTY_NAME = "SLED"
+    matching_distros = ["sled"]
+    _variant_prefix = "sled"
     _suse_regex = [".*SUSE Linux Enterprise Desktop*"]
+    famregex = ".*SUSE Linux Enterprise.*"
 
 
 class OpensuseDistro(SuseDistro):
-    urldistro = "opensuse"
+    PRETTY_NAME = "openSUSE"
+    matching_distros = ["opensuse"]
+    _variant_prefix = "opensuse"
     _suse_regex = [".*openSUSE.*"]
+    famregex = ".*openSUSE.*"
 
 
 class DebianDistro(Distro):
     # ex. http://ftp.egr.msu.edu/debian/dists/sarge/main/installer-i386/
     # daily builds: https://d-i.debian.org/daily-images/amd64/
     PRETTY_NAME = "Debian"
-    urldistro = "debian"
+    matching_distros = ["debian"]
     _debname = "debian"
 
     @classmethod
@@ -663,7 +667,16 @@ class DebianDistro(Distro):
             media_type = "daily"
         elif cache.content_regex(".disk/info",
                 "%s.*" % cls._debname.capitalize()):
-            media_type = "disk"
+            # There's two cases here:
+            # 1) Direct access ISO, attached as CDROM afterwards. We
+            #    use one set of kernels in that case which seem to
+            #    assume the prescence of CDROM media
+            # 2) ISO mounted and exported over URL. We use a different
+            #    set of kernels that expect to boot from the network
+            if cache.fetcher_is_iso():
+                media_type = "disk"
+            else:
+                media_type = "mounted_iso_url"
 
         if media_type:
             cache.debian_media_type = media_type
@@ -682,8 +695,8 @@ class DebianDistro(Distro):
 
 
     def _find_treearch(self):
-        for pattern in ["^.*/installer-(\w+)/?$",
-                        "^.*/daily-images/(\w+)/?$"]:
+        for pattern in [r"^.*/installer-(\w+)/?$",
+                        r"^.*/daily-images/(\w+)/?$"]:
             arch = re.findall(pattern, self.uri)
             if not arch:
                 continue
@@ -709,8 +722,8 @@ class DebianDistro(Distro):
         url_prefix = "current/images"
         if self.cache.debian_media_type == "daily":
             url_prefix = "daily"
-
-        self._boot_iso_paths = ["%s/netboot/mini.iso" % url_prefix]
+        elif self.cache.debian_media_type == "mounted_iso_url":
+            url_prefix = "install"
 
         tree_arch = self._find_treearch()
         hvmroot = "%s/netboot/%s-installer/%s/" % (url_prefix,
@@ -780,15 +793,14 @@ class DebianDistro(Distro):
 class UbuntuDistro(DebianDistro):
     # https://archive.ubuntu.com/ubuntu/dists/natty/main/installer-amd64/
     PRETTY_NAME = "Ubuntu"
-    urldistro = "ubuntu"
+    matching_distros = ["ubuntu"]
     _debname = "ubuntu"
 
 
 class ALTLinuxDistro(Distro):
     PRETTY_NAME = "ALT Linux"
-    urldistro = "altlinux"
+    matching_distros = ["altlinux"]
 
-    _boot_iso_paths = [("altinst", "live")]
     _kernel_paths = [("syslinux/alt0/vmlinuz", "syslinux/alt0/full.cz")]
 
     @classmethod
@@ -800,9 +812,7 @@ class ALTLinuxDistro(Distro):
 class MandrivaDistro(Distro):
     # ftp://ftp.uwsg.indiana.edu/linux/mandrake/official/2007.1/x86_64/
     PRETTY_NAME = "Mandriva/Mageia"
-    urldistro = "mandriva"
-
-    _boot_iso_paths = ["install/images/boot.iso"]
+    matching_distros = ["mandriva", "mes"]
 
     @classmethod
     def is_valid(cls, cache):
@@ -827,7 +837,7 @@ class GenericTreeinfoDistro(Distro):
     Generic catchall class for .treeinfo using distros
     """
     PRETTY_NAME = "Generic Treeinfo"
-    urldistro = None
+    matching_distros = []
 
     @classmethod
     def is_valid(cls, cache):
@@ -836,9 +846,7 @@ class GenericTreeinfoDistro(Distro):
     def __init__(self, *args, **kwargs):
         Distro.__init__(self, *args, **kwargs)
 
-        k, b = self.cache.get_treeinfo_media(self.type)
-        self._kernel_paths = k
-        self._boot_iso_paths = b
+        self._kernel_paths = self.cache.get_treeinfo_media(self.type)
 
 
 # Build list of all *Distro classes
@@ -849,13 +857,6 @@ def _build_distro_list():
             issubclass(obj, Distro) and
             obj.PRETTY_NAME):
             allstores.append(obj)
-
-    seen_urldistro = []
-    for obj in allstores:
-        if obj.urldistro and obj.urldistro in seen_urldistro:
-            raise RuntimeError("programming error: duplicate urldistro=%s" %
-                               obj.urldistro)
-        seen_urldistro.append(obj.urldistro)
 
     # Always stick GenericDistro at the end, since it's a catchall
     allstores.remove(GenericTreeinfoDistro)

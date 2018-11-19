@@ -56,6 +56,11 @@
 
 <domain type='test'>
   <name>test-many-devices</name>
+  <metadata>
+    <libosinfo:libosinfo xmlns:libosinfo="http://libosinfo.org/xmlns/libvirt/domain/1.0">
+      <libosinfo:os id="http://fedoraproject.org/fedora/unknown"/>
+    </libosinfo:libosinfo>
+  </metadata>
   <currentMemory>204800</currentMemory>
   <memory>409600</memory>
   <blkiotune>
@@ -162,7 +167,7 @@ Foo bar baz &amp; yeah boii &lt; &gt; yeahfoo
 
     <!-- bus fdc -->
     <disk type='block' device='floppy'>
-      <source dev='/dev/null'>
+      <source dev='/dev/fda'>
         <seclabel model='selinux' relabel='no'/>
         <seclabel model='dac' relabel='no'/>
       </source>
@@ -201,11 +206,19 @@ Foo bar baz &amp; yeah boii &lt; &gt; yeahfoo
 
     <disk type='file' device='disk'>
       <driver name="qemu" type="qcow2" cache="none"/>
-      <source file='/tmp/foobar2'/>
+      <source file='/tmp/foobar2/this_is_a_really_long_path_to_see_how_the_ui_handles_it/hopefully_it_doesnt_mess_things_up_too_bad/i_guess_we_will_see/in_fact_can_we_see_this_filename.img'/>
       <target dev='sda' bus='scsi'/>
       <boot order='1'/>
       <address type='drive' controller='9' bus='0' target='0' unit='0'/>
       <shareable/>
+    </disk>
+
+    <disk type='block' device='lun' rawio='no' sgio='unfiltered'>
+      <driver name='qemu' type='raw'/>
+      <source dev='/dev/szz'>
+        <reservations managed="yes"/>
+      </source>
+      <target dev='sdc' bus='scsi'/>
     </disk>
 
     <!-- bus virtio -->
@@ -505,7 +518,11 @@ Foo bar baz &amp; yeah boii &lt; &gt; yeahfoo
       <source usage='8192' units='KiB'/>
       <target dir='/run'/>
     </filesystem>
-
+    <filesystem type='file' accessmode='passthrough'>
+      <driver type='nbd' format='vmdk'/>
+      <source file='/root/container.vmdk'/>
+      <target dir='/home'/>
+    </filesystem>
 
     <!-- tpm devices -->
     <tpm model='tpm-tis'>
@@ -541,14 +558,18 @@ Foo bar baz &amp; yeah boii &lt; &gt; yeahfoo
 </domain>
 
 
-
 <domain type='test'>
   <name>test-alternate-devs</name>
   <uuid>4a64cc71-19c4-2fd0-2323-00aa941ea3c3</uuid>
   <description>Test alternate devices that can't be crammed in
-test-many-devices, like an alternate RNG.
+test-many-devices, like an alternate RNG, EOL OS ID, title field
   </description>
   <title>test alternate devs (title)</title>
+  <metadata>
+    <libosinfo:libosinfo xmlns:libosinfo="http://libosinfo.org/xmlns/libvirt/domain/1.0">
+      <libosinfo:os id="http://microsoft.com/msdos/6.22"/>
+    </libosinfo:libosinfo>
+  </metadata>
   <memory>8388608</memory>
   <currentMemory>2097152</currentMemory>
   <vcpu>2</vcpu>
@@ -568,6 +589,7 @@ test-many-devices, like an alternate RNG.
     </rng>
   </devices>
 </domain>
+
 
 <domain type='test' xmlns:test='http://libvirt.org/schemas/domain/test/1.0'>
   <test:runstate>5</test:runstate>
@@ -794,6 +816,46 @@ test-many-devices, like an alternate RNG.
     </controller>
   </devices>
 </domain>
+
+
+<domain type='test'>
+  <name>test-hyperv-uefi</name>
+  <uuid>4a64cc71-19c4-2fd0-2323-f050941ea3c3</uuid>
+  <metadata>
+    <libosinfo:libosinfo xmlns:libosinfo="http://libosinfo.org/xmlns/libvirt/domain/1.0">
+      <libosinfo:os id="http://microsoft.com/win/7"/>
+    </libosinfo:libosinfo>
+  </metadata>
+  <memory>8388608</memory>
+  <currentMemory>2097152</currentMemory>
+  <vcpu>2</vcpu>
+  <os>
+    <type arch='i686'>hvm</type>
+    <boot dev='hd'/>
+  </os>
+  <features>
+    <acpi/>
+    <apic/>
+    <hyperv>
+      <relaxed state="on"/>
+      <vapic state="on"/>
+      <spinlocks state="on" retries="8191"/>
+    </hyperv>
+    <vmport state="off"/>
+  </features>
+  <clock offset="localtime">
+    <timer name="rtc" tickpolicy="catchup"/>
+    <timer name="pit" tickpolicy="delay"/>
+    <timer name="hpet" present="no"/>
+    <timer name="hypervclock" present="yes"/>
+  </clock>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>destroy</on_crash>
+  <devices>
+  </devices>
+</domain>
+
 
 <domain type='test' xmlns:test='http://libvirt.org/schemas/domain/test/1.0'>
   <name>test-state-shutoff</name>
@@ -1821,6 +1883,18 @@ ba</description>
       </permissions>
     </target>
   </volume>
+  <volume type='block'>
+    <name>diskvol7</name>
+    <capacity>1000000</capacity>
+    <allocation>50000</allocation>
+    <target>
+      <permissions>
+        <mode>0700</mode>
+        <owner>10736</owner>
+        <group>10736</group>
+      </permissions>
+    </target>
+  </volume>
 </pool>
 
 
@@ -1869,7 +1943,7 @@ ba</description>
     <host name='ceph-mon-1.example.com' port='6789'/>
     <host name='ceph-mon-2.example.com' port='6789'/>
     <host name='ceph-mon-3.example.com' port='6789'/>
-    <name>rbd</name>
+    <name>rbd-sourcename</name>
     <auth type='ceph' username='admin'>
       <secret uuid='f65cc5a8-b77b-4254-9030-d50a528fb456'/>
     </auth>
@@ -1877,22 +1951,22 @@ ba</description>
 
   <volume type='network'>
     <name>vol1</name>
-    <key>rbd/vol1</key>
+    <key>rbd-sourcename/vol1</key>
     <capacity unit='bytes'>8302592</capacity>
     <allocation unit='bytes'>8388608</allocation>
     <target>
-      <path>rbd/vol1</path>
+      <path>rbd-sourcename/vol1</path>
       <format type='raw'/>
     </target>
   </volume>
 
   <volume type='network'>
     <name>some-rbd-vol</name>
-    <key>rbd/some-rbd-vol</key>
+    <key>rbd-sourcename/some-rbd-vol</key>
     <capacity unit='bytes'>104857600</capacity>
     <allocation unit='bytes'>104857600</allocation>
     <target>
-      <path>rbd/some-rbd-vol</path>
+      <path>rbd-sourcename/some-rbd-vol</path>
       <format type='raw'/>
     </target>
   </volume>
@@ -2335,6 +2409,7 @@ ba</description>
     <function>0</function>
     <product id='0x2448'>82801 Mobile PCI Bridge</product>
     <vendor id='0x8086'>Intel Corporation</vendor>
+    <capability type='pci-bridge'/>
   </capability>
 </device>
 
@@ -2571,6 +2646,7 @@ ba</description>
     <function>0</function>
     <product id='0x283f'>82801H (ICH8 Family) PCI Express Port 1</product>
     <vendor id='0x8086'>Intel Corporation</vendor>
+    <capability type='pci-bridge'/>
   </capability>
 </device>
 
@@ -2588,6 +2664,7 @@ ba</description>
     <function>1</function>
     <product id='0x2841'>82801H (ICH8 Family) PCI Express Port 2</product>
     <vendor id='0x8086'>Intel Corporation</vendor>
+    <capability type='pci-bridge'/>
   </capability>
 </device>
 
@@ -2605,6 +2682,7 @@ ba</description>
     <function>2</function>
     <product id='0x2843'>82801H (ICH8 Family) PCI Express Port 3</product>
     <vendor id='0x8086'>Intel Corporation</vendor>
+    <capability type='pci-bridge'/>
   </capability>
 </device>
 
@@ -2622,6 +2700,7 @@ ba</description>
     <function>3</function>
     <product id='0x2845'>82801H (ICH8 Family) PCI Express Port 4</product>
     <vendor id='0x8086'>Intel Corporation</vendor>
+    <capability type='pci-bridge'/>
   </capability>
 </device>
 
@@ -2639,6 +2718,7 @@ ba</description>
     <function>4</function>
     <product id='0x2847'>82801H (ICH8 Family) PCI Express Port 5</product>
     <vendor id='0x8086'>Intel Corporation</vendor>
+    <capability type='pci-bridge'/>
   </capability>
 </device>
 
@@ -3277,6 +3357,7 @@ ba</description>
     <function>0</function>
     <product id='0x25f8'>5000 Series Chipset PCI Express x8 Port 4-5</product>
     <vendor id='0x8086'>Intel Corporation</vendor>
+    <capability type='pci-bridge'/>
   </capability>
 </device>
 

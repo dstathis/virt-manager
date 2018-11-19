@@ -19,8 +19,9 @@ VNC or SPICE, as well as text mode installs over serial console. The guest
 can be configured to use one or more virtual disks, network interfaces,
 audio devices, physical USB or PCI devices, among others.
 
-The installation media can be held locally or remotely on NFS, HTTP, FTP
-servers. In the latter case C<virt-install> will fetch the minimal files
+The installation media can be local ISO or CDROM media, or a distro install
+tree hosted remotely over HTTP, FTP, or in a local directory. In the install
+tree case C<virt-install> will fetch the minimal files
 necessary to kick off the installation process, allowing the guest
 to fetch the rest of the OS distribution as needed. PXE booting, and importing
 an existing disk image (thus skipping the install phase) are also supported.
@@ -261,7 +262,7 @@ Tune CPU parameters for the guest.
 
 Configure which of the host's physical CPUs the domain VCPU will be pinned to. Example invocation
 
-    --cputune vpcupin0.vcpu=0,vpcupin0.cpuset=0-3,vpcupin1.vcpu=1,vpcupin1.cpuset=4-7
+    --cputune vcpupin0.vcpu=0,vcpupin0.cpuset=0-3,vcpupin1.vcpu=1,vcpupin1.cpuset=4-7
 
 Use --cputune=? to see a list of all available sub options. Complete details at L<https://libvirt.org/formatdomain.html#elementsCPUTuning>
 
@@ -397,10 +398,6 @@ An HTTP server location containing an installable distribution image.
 
 An FTP server location containing an installable distribution image.
 
-=item nfs:host:/path or nfs://host/path
-
-An NFS server location containing an installable distribution image. This requires running virt-install as root.
-
 =item DIRECTORY
 
 Path to a local directory containing an installable distribution image. Note that the directory will not be accessible by the guest after initial boot, so the OS installer will need another way to access the rest of the install media.
@@ -474,21 +471,6 @@ used to run an automated install without requiring a network hosted kickstart
 file:
 
 --initrd-inject=/path/to/my.ks --extra-args "ks=file:/my.ks"
-
-=item B<--os-variant> OS_VARIANT
-
-Optimize the guest configuration for a specific operating system (ex.
-'fedora18', 'rhel7', 'winxp'). While not required, specifying this
-options is HIGHLY RECOMMENDED, as it can greatly increase performance
-by specifying virtio among other guest tweaks.
-
-By default, virt-install will attempt to auto detect this value from
-the install media (currently only supported for URL installs). Autodetection
-can be disabled with the special value 'none'. Autodetection can be
-forced with the special value 'auto'.
-
-Use the command "osinfo-query os" to get the list of the accepted OS
-variants.
 
 =item B<--boot> BOOTOPTS
 
@@ -573,6 +555,29 @@ Use --idmap=? to see a list of all available sub options. Complete details at L<
 
 =back
 
+
+
+
+=head1 GUEST OS OPTIONS
+
+=over 4
+
+=item B<--os-variant> OS_VARIANT
+
+Optimize the guest configuration for a specific operating system (ex.
+'fedora29', 'rhel7', 'win10'). While not required, specifying this
+options is HIGHLY RECOMMENDED, as it can greatly increase performance
+by specifying virtio among other guest tweaks.
+
+By default, virt-install will attempt to auto detect this value from
+the install media (currently only supported for URL installs). Autodetection
+can be disabled with the special value 'none'. Autodetection can be
+forced with the special value 'auto'.
+
+Use the command "osinfo-query os" to get the list of the accepted OS
+variants.
+
+=back
 
 
 
@@ -1225,6 +1230,18 @@ USB by vendor, product (via lsusb).
 
 PCI device (via lspci).
 
+=item B<--hostdev wlan0,type=net>
+
+Network device (in LXC container).
+
+=item B<--hostdev /dev/net/tun,type=misc>
+
+Character device (in LXC container).
+
+=item B<--hostdev /dev/sdf,type=storage>
+
+Block device (in LXC container).
+
 =back
 
 Use --hostdev=? to see a list of all available sub options. Complete details at L<https://libvirt.org/formatdomain.html#elementsHostDev>
@@ -1654,6 +1671,13 @@ server is restarted.  Libvirt forgets the XML configuration of the VM
 after either of these events.  Note that the VM's disks will not be
 deleted.  See:
 L<https://wiki.libvirt.org/page/VM_lifecycle#Transient_guest_domains_vs_Persistent_guest_domains>
+
+=item B<--destroy-on-exit>
+
+When the VM console window is exited, destroy (force poweroff) the VM.
+If you combine this with --transient, this makes the virt-install command
+work similar to qemu, where the VM is shutdown when the console window
+is closed by the user.
 
 =item B<--print-xml> [STEP]
 

@@ -12,14 +12,10 @@ from ..xmlbuilder import XMLProperty
 class DevicePanic(Device):
     XML_NAME = "panic"
 
-    MODEL_DEFAULT = "default"
     MODEL_ISA = "isa"
     MODEL_PSERIES = "pseries"
     MODEL_HYPERV = "hyperv"
     MODEL_S390 = "s390"
-    MODELS = [MODEL_ISA, MODEL_PSERIES, MODEL_HYPERV, MODEL_S390]
-
-    ISA_ADDRESS_TYPE = "isa"
 
     @staticmethod
     def get_pretty_model(panic_model):
@@ -44,21 +40,24 @@ class DevicePanic(Device):
             return [DevicePanic.MODEL_S390]
         return []
 
+    model = XMLProperty("./@model")
+    type = XMLProperty("./address/@type")
+    iobase = XMLProperty("./address/@iobase")
+
+
+    ##################
+    # Default config #
+    ##################
+
     @staticmethod
-    def get_default_model(os):
-        models = DevicePanic.get_models(os)
+    def get_default_model(guest):
+        models = DevicePanic.get_models(guest.os)
         if models:
             return models[0]
         return None
 
-    def _get_default_address_type(self):
-        if self.iobase:
-            return DevicePanic.ISA_ADDRESS_TYPE
-        return None
-
-    model = XMLProperty("./@model",
-                        default_cb=lambda s: DevicePanic.MODEL_ISA,
-                        default_name=MODEL_DEFAULT)
-    type = XMLProperty("./address/@type",
-                       default_cb=_get_default_address_type)
-    iobase = XMLProperty("./address/@iobase")
+    def set_defaults(self, guest):
+        if not self.type and self.iobase:
+            self.type = "isa"
+        if not self.model:
+            self.model = self.get_default_model(guest)

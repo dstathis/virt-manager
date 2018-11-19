@@ -16,19 +16,33 @@ from ..xmlbuilder import XMLProperty
 class DeviceTpm(Device):
     XML_NAME = "tpm"
 
+    VERSION_1_2 = "1.2"
+    VERSION_2_0 = "2.0"
+    VERSIONS = [VERSION_1_2, VERSION_2_0]
+
     TYPE_PASSTHROUGH = "passthrough"
-    TYPE_DEFAULT = "default"
-    TYPES = [TYPE_PASSTHROUGH]
+    TYPE_EMULATOR = "emulator"
+    TYPES = [TYPE_PASSTHROUGH, TYPE_EMULATOR]
 
     MODEL_TIS = "tpm-tis"
-    MODEL_DEFAULT = "default"
-    MODELS = [MODEL_TIS]
+    MODEL_CRB = "tpm-crb"
+    MODELS = [MODEL_TIS, MODEL_CRB]
 
     @staticmethod
     def get_pretty_type(tpm_type):
         if tpm_type == DeviceTpm.TYPE_PASSTHROUGH:
             return _("Passthrough device")
+        if tpm_type == DeviceTpm.TYPE_EMULATOR:
+            return _("Emulated device")
         return tpm_type
+
+    @staticmethod
+    def get_pretty_model(tpm_model):
+        if tpm_model == DeviceTpm.MODEL_TIS:
+            return _("TIS")
+        if tpm_model == DeviceTpm.MODEL_CRB:
+            return _("CRB")
+        return tpm_model
 
     def supports_property(self, propname):
         """
@@ -36,6 +50,7 @@ class DeviceTpm(Device):
         """
         users = {
             "device_path": [self.TYPE_PASSTHROUGH],
+            "version": [self.TYPE_EMULATOR],
         }
 
         if users.get(propname):
@@ -43,9 +58,22 @@ class DeviceTpm(Device):
 
         return hasattr(self, propname)
 
-    type = XMLProperty("./backend/@type",
-                       default_cb=lambda s: s.TYPE_PASSTHROUGH)
-    model = XMLProperty("./@model",
-                       default_cb=lambda s: s.MODEL_TIS)
-    device_path = XMLProperty("./backend/device/@path",
-                              default_cb=lambda s: "/dev/tpm0")
+    type = XMLProperty("./backend/@type")
+    version = XMLProperty("./backend/@version")
+    model = XMLProperty("./@model")
+    device_path = XMLProperty("./backend/device/@path")
+
+
+    ##################
+    # Default config #
+    ##################
+
+    def set_defaults(self, guest):
+        if not self.type:
+            self.type = self.TYPE_PASSTHROUGH
+        if not self.model:
+            self.model = self.MODEL_TIS
+        if not self.version and self.supports_property("version"):
+            self.version = self.VERSION_1_2
+        if not self.device_path and self.supports_property("device_path"):
+            self.device_path = "/dev/tpm0"

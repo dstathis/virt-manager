@@ -115,9 +115,10 @@ class vmmAddStorage(vmmGObjectUI):
     @staticmethod
     def check_path_search(src, conn, path):
         skip_paths = src.config.get_perms_fix_ignore()
-        user, broken_paths = virtinst.DeviceDisk.check_path_search(
+        searchdata = virtinst.DeviceDisk.check_path_search(
             conn.get_backend(), path)
 
+        broken_paths = searchdata.fixlist[:]
         for p in broken_paths[:]:
             if p in skip_paths:
                 broken_paths.remove(p)
@@ -139,8 +140,8 @@ class vmmAddStorage(vmmGObjectUI):
             return
 
         logging.debug("Attempting to correct permission issues.")
-        errors = virtinst.DeviceDisk.fix_path_search_for_user(
-            conn.get_backend(), path, user)
+        errors = virtinst.DeviceDisk.fix_path_search(
+                conn.get_backend(), searchdata)
         if not errors:
             return
 
@@ -258,7 +259,7 @@ class vmmAddStorage(vmmGObjectUI):
             disk.set_vol_install(vol_install)
 
             fmt = self.conn.get_default_storage_format()
-            if fmt in disk.get_vol_install().list_formats():
+            if disk.get_vol_install().supports_property("format"):
                 logging.debug("Using default prefs format=%s for path=%s",
                     fmt, disk.path)
                 disk.get_vol_install().format = fmt

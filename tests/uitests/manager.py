@@ -108,7 +108,7 @@ class Manager(uiutils.UITestCase):
             """
             win.click()
             clickX = win.position[0] + win.size[0] / 2
-            clickY = win.position[1] + 3
+            clickY = win.position[1] + 10
             dogtail.rawinput.drag((clickX, clickY), (1000, 1000))
 
         manager = self.app.topwin
@@ -167,3 +167,14 @@ class Manager(uiutils.UITestCase):
         err.find_fuzzy("will remove the connection", "label")
         err.find_fuzzy("Yes", "push button").click()
         uiutils.check_in_loop(lambda: not host.showing)
+
+    def testManagerDefaultStartup(self):
+        self.app.open(use_uri=False)
+        manager = self.app.topwin
+        errlabel = manager.find("error-label")
+        uiutils.check_in_loop(
+                lambda: "Checking for virtualization" in errlabel.text)
+        uiutils.check_in_loop(
+                lambda: "File->Add Connection" in errlabel.text)
+        uiutils.check_in_loop(
+                lambda: "appropriate qemu/kvm" in errlabel.text)

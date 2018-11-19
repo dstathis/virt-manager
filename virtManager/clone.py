@@ -51,13 +51,7 @@ def can_we_clone(conn, vol, path):
     if not path:
         msg = _("No storage to clone.")
 
-    elif vol:
-        # Managed storage
-        if not conn.check_support(conn.SUPPORT_POOL_CREATEVOLFROM,
-                                  vol.get_parent_pool().get_backend()):
-            if conn.is_remote() or not os.access(path, os.R_OK):
-                msg = _("Connection does not support managed storage cloning.")
-    else:
+    elif not vol:
         is_dev = path.startswith("/dev")
         if conn.is_remote():
             msg = _("Cannot clone unmanaged remote storage.")
@@ -655,7 +649,7 @@ class vmmCloneVM(vmmGObjectUI):
             src.set_active(STORAGE_COMBO_SHARE)
 
         # Show storage
-        row = self.storage_change_path(row)
+        self.storage_change_path(row)
 
     def change_storage_doclone_toggled(self, src):
         do_clone = src.get_active()
@@ -698,10 +692,7 @@ class vmmCloneVM(vmmGObjectUI):
         row = self.net_list[orig]
 
         try:
-            ignore, msg = DeviceInterface.is_conflict_net(
-                                self.conn.get_backend(), new)
-            if msg:
-                raise RuntimeError(msg)
+            DeviceInterface.is_conflict_net(self.conn.get_backend(), new)
             row[NETWORK_INFO_NEW_MAC] = new
         except Exception as e:
             self.err.show_err(_("Error changing MAC address: %s") % str(e))

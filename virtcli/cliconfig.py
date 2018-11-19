@@ -62,7 +62,7 @@ def _setup_gsettings_path(schemadir):
         raise RuntimeError("Failed to compile local gsettings schemas")
 
 
-__version__ = "1.6.0"
+__version__ = "2.0.0"
 
 
 class _CLIConfig(object):
@@ -70,14 +70,6 @@ class _CLIConfig(object):
         self.cfgpath = _cfgpath
         self.version = __version__
 
-        self.default_qemu_user = _get_param("default_qemu_user", "root")
-        self.stable_defaults = bool(int(_get_param("stable_defaults", "0")))
-
-        self.preferred_distros = _split_list(
-            _get_param("preferred_distros", ""))
-        self.hv_packages = _split_list(_get_param("hv_packages", ""))
-        self.askpass_package = _split_list(_get_param("askpass_packages", ""))
-        self.libvirt_packages = _split_list(_get_param("libvirt_packages", ""))
         self.default_graphics = _get_param("default_graphics", "spice")
         self.default_hvs = _split_list(_get_param("default_hvs", ""))
 

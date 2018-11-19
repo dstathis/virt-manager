@@ -121,8 +121,26 @@ class DeviceInterface(Device):
     TYPE_VHOSTUSER  = "vhostuser"
     TYPE_ETHERNET   = "ethernet"
     TYPE_DIRECT   = "direct"
-    network_types = [TYPE_BRIDGE, TYPE_VIRTUAL, TYPE_USER, TYPE_ETHERNET,
-                     TYPE_DIRECT]
+
+    @staticmethod
+    def get_models(guest):
+        if not guest.os.is_hvm():
+            return []
+
+        ret = []
+        if guest.type in ["kvm", "qemu", "vz", "test"]:
+            ret.append("virtio")
+        if guest.os.is_x86():
+            if guest.os.is_q35():
+                ret.append("e1000e")
+            else:
+                ret.append("rtl8139")
+                ret.append("e1000")
+        if guest.type in ["xen", "test"]:
+            ret.append("netfront")
+
+        ret.sort()
+        return ret
 
     @staticmethod
     def get_network_type_desc(net_type):
@@ -152,9 +170,11 @@ class DeviceInterface(Device):
 
         for ignore in range(256):
             mac = _random_mac(conn)
-            ret = DeviceInterface.is_conflict_net(conn, mac)
-            if ret[1] is None:
+            try:
+                DeviceInterface.is_conflict_net(conn, mac)
                 return mac
+            except RuntimeError:
+                continue
 
         logging.debug("Failed to generate non-conflicting MAC")
         return None
@@ -162,65 +182,21 @@ class DeviceInterface(Device):
     @staticmethod
     def is_conflict_net(conn, searchmac):
         """
-        :returns: a two element tuple:
-            first element is True if fatal collision occured
-            second element is a string description of the collision.
-
-            Non fatal collisions (mac addr collides with inactive guest) will
-            return (False, "description of collision")
+        Raise RuntimeError if the passed mac conflicts with a defined VM
         """
-        if searchmac is None:
-            return (False, None)
-
-        vms = conn.fetch_all_guests()
+        vms = conn.fetch_all_domains()
         for vm in vms:
             for nic in vm.devices.interface:
                 nicmac = nic.macaddr or ""
                 if nicmac.lower() == searchmac.lower():
-                    return (True, _("The MAC address '%s' is in use "
-                                    "by another virtual machine.") % searchmac)
-        return (False, None)
-
-
-    def __init__(self, *args, **kwargs):
-        Device.__init__(self, *args, **kwargs)
-
-        self._random_mac = None
-        self._default_bridge = None
+                    raise RuntimeError(
+                            _("The MAC address '%s' is in use "
+                              "by another virtual machine.") % searchmac)
 
 
     ###############
     # XML helpers #
     ###############
-
-    def _generate_default_bridge(self):
-        ret = self._default_bridge
-        if ret is None:
-            ret = False
-            default = _default_bridge(self.conn)
-            if default:
-                ret = default
-
-        self._default_bridge = ret
-        return ret or None
-
-    def _get_default_bridge(self):
-        if self.type == self.TYPE_BRIDGE:
-            return self._generate_default_bridge()
-        return None
-
-    def _default_source_mode(self):
-        if self.type == self.TYPE_DIRECT:
-            return "vepa"
-        return None
-
-    def _get_default_mac(self):
-        if not self._random_mac:
-            self._random_mac = self.generate_mac(self.conn)
-        return self._random_mac
-    def _validate_mac(self, val):
-        util.validate_macaddr(val)
-        return val
 
     def _get_source(self):
         """
@@ -261,25 +237,21 @@ class DeviceInterface(Device):
     _XML_PROP_ORDER = [
         "_bridge", "_network", "_source_dev", "source_type", "source_path",
         "source_mode", "portgroup", "macaddr", "target_dev", "model",
-        "virtualport", "filterref", "rom_bar", "rom_file"]
+        "virtualport", "filterref", "rom_bar", "rom_file", "mtu_size"]
 
-    _bridge = XMLProperty("./source/@bridge", default_cb=_get_default_bridge)
+    _bridge = XMLProperty("./source/@bridge")
     _network = XMLProperty("./source/@network")
     _source_dev = XMLProperty("./source/@dev")
 
     virtualport = XMLChildProperty(_VirtualPort, is_single=True)
-    type = XMLProperty("./@type",
-                       default_cb=lambda s: s.TYPE_BRIDGE)
+    type = XMLProperty("./@type")
     trustGuestRxFilters = XMLProperty("./@trustGuestRxFilters", is_yesno=True)
 
-    macaddr = XMLProperty("./mac/@address",
-                          set_converter=_validate_mac,
-                          default_cb=_get_default_mac)
+    macaddr = XMLProperty("./mac/@address")
 
     source_type = XMLProperty("./source/@type")
     source_path = XMLProperty("./source/@path")
-    source_mode = XMLProperty("./source/@mode",
-                              default_cb=_default_source_mode)
+    source_mode = XMLProperty("./source/@mode")
     portgroup = XMLProperty("./source/@portgroup")
     model = XMLProperty("./model/@type")
     target_dev = XMLProperty("./target/@dev")
@@ -292,26 +264,57 @@ class DeviceInterface(Device):
     rom_bar = XMLProperty("./rom/@bar", is_onoff=True)
     rom_file = XMLProperty("./rom/@file")
 
+    mtu_size = XMLProperty("./mtu/@size", is_int=True)
+
 
     #############
     # Build API #
     #############
 
-    def setup(self, meter=None):
-        ignore = meter
+    def validate(self):
         if not self.macaddr:
             return
 
-        ret, msg = self.is_conflict_net(self.conn, self.macaddr)
-        if msg is None:
-            return
-        if ret is False:
-            logging.warning(msg)
-        else:
-            raise RuntimeError(msg)
+        util.validate_macaddr(self.macaddr)
+        self.is_conflict_net(self.conn, self.macaddr)
 
     def set_default_source(self):
         if (self.conn.is_qemu_session() or self.conn.is_test()):
             self.type = self.TYPE_USER
         else:
             self.type, self.source = _default_network(self.conn)
+
+
+    ##################
+    # Default config #
+    ##################
+
+    @staticmethod
+    def default_model(guest):
+        if not guest.os.is_hvm():
+            return None
+        if guest.supports_virtionet():
+            return "virtio"
+        if guest.os.is_q35():
+            return "e1000e"
+        if not guest.os.is_x86():
+            return None
+
+        prefs = ["e1000", "rtl8139", "ne2k_pci", "pcnet"]
+        supported_models = guest.osinfo.supported_netmodels()
+        for pref in prefs:
+            if pref in supported_models:
+                return pref
+        return "e1000"
+
+    def set_defaults(self, guest):
+        if not self.type:
+            self.type = self.TYPE_BRIDGE
+        if not self.macaddr:
+            self.macaddr = self.generate_mac(self.conn)
+        if self.type == self.TYPE_BRIDGE and not self._bridge:
+            self._bridge = _default_bridge(self.conn)
+        if self.type == self.TYPE_DIRECT and not self.source_mode:
+            self.source_mode = "vepa"
+        if not self.model:
+            self.model = self.default_model(guest)

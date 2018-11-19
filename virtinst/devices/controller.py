@@ -20,10 +20,13 @@ class DeviceController(Device):
     TYPE_USB             = "usb"
     TYPE_PCI             = "pci"
     TYPE_CCID            = "ccid"
-    TYPES = [TYPE_IDE, TYPE_FDC,
-             TYPE_SCSI, TYPE_SATA,
-             TYPE_VIRTIOSERIAL, TYPE_USB,
-             TYPE_PCI, TYPE_CCID]
+
+    @staticmethod
+    def get_recommended_types(_guest):
+        return [DeviceController.TYPE_SCSI,
+                DeviceController.TYPE_USB,
+                DeviceController.TYPE_VIRTIOSERIAL,
+                DeviceController.TYPE_CCID]
 
     @staticmethod
     def pretty_type(ctype):
@@ -71,14 +74,16 @@ class DeviceController(Device):
 
     @staticmethod
     def get_usb3_controller(conn, guest):
+        ignore = guest
         ctrl = DeviceController(conn)
         ctrl.type = "usb"
         ctrl.model = "nec-xhci"
-        if ((guest.os.is_arm_machvirt() or guest.os.is_pseries()) and
-            conn.check_support(conn.SUPPORT_CONN_QEMU_XHCI)):
+        if conn.check_support(conn.SUPPORT_CONN_QEMU_XHCI):
             ctrl.model = "qemu-xhci"
         if conn.check_support(conn.SUPPORT_CONN_USB3_PORTS):
-            ctrl.ports = 8
+            # 15 is the max ports qemu supports, might as well
+            # Add as many as possible
+            ctrl.ports = 15
         return ctrl
 
 
@@ -90,7 +95,7 @@ class DeviceController(Device):
     ports = XMLProperty("./@ports", is_int=True)
     master_startport = XMLProperty("./master/@startport", is_int=True)
 
-    index = XMLProperty("./@index", is_int=True, default_cb=lambda s: 0)
+    index = XMLProperty("./@index", is_int=True)
 
     def pretty_desc(self):
         ret = self.pretty_type(self.type)
@@ -102,3 +107,12 @@ class DeviceController(Device):
         if self.type == "pci" and self.model == "pcie-root":
             ret = "PCIe"
         return ret
+
+
+    ##################
+    # Default config #
+    ##################
+
+    def set_defaults(self, _guest):
+        if self.index is None:
+            self.index = 0

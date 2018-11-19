@@ -187,11 +187,12 @@ class Network(XMLBuilder):
     # Validation helpers #
     ######################
 
-    def _validate_name(self, name):
+    @staticmethod
+    def validate_name(conn, name):
         util.validate_name(_("Network"), name)
 
         try:
-            self.conn.networkLookupByName(name)
+            conn.networkLookupByName(name)
         except libvirt.libvirtError:
             return
         raise ValueError(_("Name '%s' already in use by another network." %
@@ -208,7 +209,7 @@ class Network(XMLBuilder):
                        "macaddr", "ips", "routes", "bandwidth"]
 
     ipv6 = XMLProperty("./@ipv6", is_yesno=True)
-    name = XMLProperty("./name", validate_cb=_validate_name)
+    name = XMLProperty("./name")
     uuid = XMLProperty("./uuid")
 
     virtualport_type = XMLProperty("./virtualport/@type")
@@ -234,7 +235,7 @@ class Network(XMLBuilder):
     ##################
 
     def install(self, start=True, autostart=True):
-        xml = self.get_xml_config()
+        xml = self.get_xml()
         logging.debug("Creating virtual network '%s' with xml:\n%s",
                       self.name, xml)
 

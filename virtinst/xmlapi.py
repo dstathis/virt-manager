@@ -76,9 +76,10 @@ class _XPath(object):
 
 
 class _XMLBase(object):
-    NAMESPACES = {
-        "qemu": "http://libvirt.org/schemas/domain/qemu/1.0",
-    }
+    NAMESPACES = {}
+    @classmethod
+    def register_namespace(cls, nsname, uri):
+        cls.NAMESPACES[nsname] = uri
 
     def copy_api(self):
         raise NotImplementedError()
@@ -96,7 +97,7 @@ class _XMLBase(object):
         raise NotImplementedError()
     def _node_set_property(self, node, propname, setval):
         raise NotImplementedError()
-    def _node_new(self, xpathseg):
+    def _node_new(self, xpathseg, parentnode):
         raise NotImplementedError()
     def _node_add_child(self, parentxpath, parentnode, newnode):
         raise NotImplementedError()
@@ -211,7 +212,7 @@ class _XMLBase(object):
                 parentnode = tmpnode
                 continue
 
-            newnode = self._node_new(xpathseg)
+            newnode = self._node_new(xpathseg, parentnode)
             self._node_add_child(oldxpath, parentnode, newnode)
             parentnode = newnode
 
@@ -306,17 +307,22 @@ class _Libxml2API(_XMLBase):
         else:
             node.setProp(propname, util.xml_escape(setval))
 
-    def _node_new(self, xpathseg):
+    def _node_new(self, xpathseg, parentnode):
         newnode = libxml2.newNode(xpathseg.nodename)
         if not xpathseg.nsname:
             return newnode
 
-        ctxnode = self._ctx.contextNode()
-        for ns in util.listify(ctxnode.nsDefs()):
-            if ns.name == xpathseg.nsname:
-                break
-        else:
-            ns = ctxnode.newNs(
+        def _find_parent_ns():
+            parent = parentnode
+            while parent:
+                for ns in util.listify(parent.nsDefs()):
+                    if ns.name == xpathseg.nsname:
+                        return ns
+                parent = parent.get_parent()
+
+        ns = _find_parent_ns()
+        if not ns:
+            ns = newnode.newNs(
                     self.NAMESPACES[xpathseg.nsname], xpathseg.nsname)
         newnode.setNs(ns)
         return newnode

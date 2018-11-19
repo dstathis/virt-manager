@@ -5,23 +5,20 @@
 # See the COPYING file in the top-level directory.
 
 import logging
+import os
 import queue
 import threading
+import time
 
 from gi.repository import Gio
 from gi.repository import GLib
 from gi.repository import Gtk
 
-from . import packageutils
 from .baseclass import vmmGObject
 from .connect import vmmConnect
 from .connmanager import vmmConnectionManager
 from .inspection import vmmInspection
 from .systray import vmmSystray
-
-DETAILS_PERF = 1
-DETAILS_CONFIG = 2
-DETAILS_CONSOLE = 3
 
 (PRIO_HIGH,
  PRIO_LOW) = range(1, 3)
@@ -122,6 +119,9 @@ class vmmEngine(vmmGObject):
 
         if not self.config.get_conn_uris() and not cliuri:
             # Only add default if no connections are currently known
+            manager = self._get_manager()
+            manager.set_startup_error(
+                    _("Checking for virtualization packages..."))
             self.timeout_add(1000, self._add_default_conn)
 
     def show_ip_changed(self, *ignore):
@@ -132,56 +132,94 @@ class vmmEngine(vmmGObject):
     def _add_default_conn(self):
         """
         If there's no cached connections, or any requested on the command
-        line, try to determine a default URI and open it, possibly talking
-        to packagekit and other bits
+        line, try to determine a default URI and open it, first checking
+        if libvirt is running
         """
         manager = self._get_manager()
 
-        # Manager fail message
-        msg = _("Could not detect a default hypervisor. Make\n"
-                "sure the appropriate virtualization packages\n"
-                "containing kvm, qemu, libvirt, etc. are\n"
-                "installed, and that libvirtd is running.\n\n"
-                "A hypervisor connection can be manually\n"
-                "added via File->Add Connection")
+        logging.debug("Trying to start libvirtd through systemd")
+        unitname = "libvirtd.service"
+        libvirtd_installed = False
+        libvirtd_active = False
 
-        logging.debug("Determining default libvirt URI")
-
-        packages_verified = False
+        # Fetch all units from systemd
         try:
-            libvirt_packages = self.config.libvirt_packages
-            packages = self.config.hv_packages + libvirt_packages
-
-            packages_verified = packageutils.check_packagekit(
-                    manager, manager.err, packages)
+            bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+            systemd = Gio.DBusProxy.new_sync(bus, 0, None,
+                                     "org.freedesktop.systemd1",
+                                     "/org/freedesktop/systemd1",
+                                     "org.freedesktop.systemd1.Manager", None)
+            units = systemd.ListUnits()
         except Exception:
-            logging.exception("Error talking to PackageKit")
+            units = []
+            logging.exception("Couldn't connect to systemd")
+            libvirtd_installed = os.path.exists("/var/run/libvirt")
+            libvirtd_active = os.path.exists("/var/run/libvirt/libvirt-sock")
 
+        # Check if libvirtd is installed and running
+        for unitinfo in units:
+            if unitinfo[0] != unitname:
+                continue
+            libvirtd_installed = True
+            libvirtd_active = unitinfo[3] == "active"
+            unitpath = unitinfo[6]
+            break
+
+        # If it's not running, try to start it
+        try:
+            if units and libvirtd_installed and not libvirtd_active:
+                unit = Gio.DBusProxy.new_sync(
+                        bus, 0, None,
+                        "org.freedesktop.systemd1", unitpath,
+                        "org.freedesktop.systemd1.Unit", None)
+                if not self.config.test_first_run:
+                    unit.Start("(s)", "fail")
+                    time.sleep(2)
+                    libvirtd_active = True
+        except Exception:
+            logging.exception("Error starting libvirtd")
+
+        # Manager fail message
         tryuri = None
-        if packages_verified:
-            tryuri = "qemu:///system"
-        elif not self.config.test_first_run:
+        if not self.config.test_first_run:
             tryuri = vmmConnect.default_uri()
+        logging.debug("Probed default URI=%s", tryuri)
 
-        if tryuri is None:
+        msg = ""
+        if not libvirtd_installed:
+            msg += _("The libvirtd service does not appear to be installed. "
+                     "Install and run the libvirtd service to manage "
+                     "virtualization on this host.")
+        elif not libvirtd_active:
+            msg += _("libvirtd is installed but not running. Start the "
+                     "libvirtd service to manage virtualization on this host.")
+
+        if not tryuri or "qemu" not in tryuri:
+            if msg:
+                msg += "\n\n"
+            msg += _("Could not detect a default hypervisor. Make "
+                    "sure the appropriate qemu/kvm virtualization "
+                    "packages are installed to manage virtualization "
+                    "on this host.")
+
+        if msg:
+            msg += "\n\n"
+            msg += _("A virtualization connection can be manually "
+                     "added via File->Add Connection")
+
+
+        if (tryuri is None or
+            not libvirtd_installed or
+            not libvirtd_active):
             manager.set_startup_error(msg)
             return
 
-        # packagekit API via gnome-software doesn't even work nicely these
-        # days. Not sure what the state of this warning is...
-        #
-        # warnmsg = _("The 'libvirtd' service will need to be started.\n\n"
-        #            "After that, virt-manager will connect to libvirt on\n"
-        #            "the next application start up.")
-        # if not connected and not libvirtd_started:
-        #    manager.err.ok(_("Libvirt service must be started"), warnmsg)
-
+        # Launch idle callback to connect to default URI
         def idle_connect():
             def _open_completed(c, ConnectError):
                 if ConnectError:
                     self._handle_conn_error(c, ConnectError)
 
-            packageutils.start_libvirtd()
             conn = vmmConnectionManager.get_instance().add_conn(tryuri)
             conn.set_autoconnect(True)
             conn.connect_once("open-completed", _open_completed)
@@ -331,6 +369,9 @@ class vmmEngine(vmmGObject):
                 # libvirtd is shut down
                 logging.debug("Error polling connection %s",
                         conn.get_uri(), exc_info=True)
+
+            # Need to clear reference to make leak check happy
+            conn = None
             self._tick_queue.task_done()
         return 1
 
@@ -428,30 +469,22 @@ class vmmEngine(vmmGObject):
                 return vm
 
     def _cli_show_vm_helper(self, uri, clistr, page):
-        src = self._get_manager()
-
         vm = self._find_vm_by_cli_str(uri, clistr)
         if not vm:
-            src.err.show_err("%s does not have VM '%s'" %
-                (uri, clistr), modal=True)
-            return
+            raise RuntimeError("%s does not have VM '%s'" %
+                (uri, clistr))
 
-        try:
-            from .details import vmmDetails
-            details = vmmDetails.get_instance(src, vm)
+        from .details import vmmDetails
+        details = vmmDetails.get_instance(None, vm)
 
-            if page == DETAILS_PERF:
-                details.activate_performance_page()
-            elif page == DETAILS_CONFIG:
-                details.activate_config_page()
-            elif page == DETAILS_CONSOLE:
-                details.activate_console_page()
-            elif page is None:
-                details.activate_default_page()
+        if page == self.CLI_SHOW_DOMAIN_PERFORMANCE:
+            details.activate_performance_page()
+        elif page == self.CLI_SHOW_DOMAIN_EDITOR:
+            details.activate_config_page()
+        elif page == self.CLI_SHOW_DOMAIN_CONSOLE:
+            details.activate_console_page()
 
-            details.show()
-        except Exception as e:
-            src.err.show_err(_("Error launching details: %s") % str(e))
+        details.show()
 
     def _get_manager(self):
         from .manager import vmmManager
@@ -466,18 +499,14 @@ class vmmEngine(vmmGObject):
             manager.show()
         elif show_window == self.CLI_SHOW_DOMAIN_CREATOR:
             from .create import vmmCreate
-            # Launch the manager here since there's no way to get
-            # back to it.
-            vmmCreate.show_instance(self._get_manager(), uri)
-        elif show_window == self.CLI_SHOW_DOMAIN_EDITOR:
-            self._cli_show_vm_helper(uri, clistr, DETAILS_CONFIG)
-        elif show_window == self.CLI_SHOW_DOMAIN_PERFORMANCE:
-            self._cli_show_vm_helper(uri, clistr, DETAILS_PERF)
-        elif show_window == self.CLI_SHOW_DOMAIN_CONSOLE:
-            self._cli_show_vm_helper(uri, clistr, DETAILS_CONSOLE)
+            vmmCreate.show_instance(None, uri)
         elif show_window == self.CLI_SHOW_HOST_SUMMARY:
             from .host import vmmHost
             vmmHost.show_instance(None, self._connobjs[uri])
+        elif (show_window in [self.CLI_SHOW_DOMAIN_EDITOR,
+                              self.CLI_SHOW_DOMAIN_PERFORMANCE,
+                              self.CLI_SHOW_DOMAIN_CONSOLE]):
+            self._cli_show_vm_helper(uri, clistr, show_window)
         else:
             raise RuntimeError("Unknown cli window command '%s'" %
                 show_window)

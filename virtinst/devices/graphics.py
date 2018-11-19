@@ -5,6 +5,7 @@
 # This work is licensed under the GNU GPLv2 or later.
 # See the COPYING file in the top-level directory.
 
+import logging
 import os
 
 from .device import Device
@@ -43,7 +44,6 @@ class DeviceGraphics(Device):
     TYPE_VNC = "vnc"
     TYPE_RDP = "rdp"
     TYPE_SPICE = "spice"
-    TYPES = [TYPE_VNC, TYPE_SDL, TYPE_RDP, TYPE_SPICE]
 
     CHANNEL_TYPE_MAIN     = "main"
     CHANNEL_TYPE_DISPLAY  = "display"
@@ -51,15 +51,6 @@ class DeviceGraphics(Device):
     CHANNEL_TYPE_CURSOR   = "cursor"
     CHANNEL_TYPE_PLAYBACK = "playback"
     CHANNEL_TYPE_RECORD   = "record"
-    CHANNEL_TYPES = [CHANNEL_TYPE_MAIN, CHANNEL_TYPE_DISPLAY,
-                     CHANNEL_TYPE_INPUTS, CHANNEL_TYPE_CURSOR,
-                     CHANNEL_TYPE_PLAYBACK, CHANNEL_TYPE_RECORD]
-
-    CHANNEL_MODE_SECURE   = "secure"
-    CHANNEL_MODE_INSECURE = "insecure"
-    CHANNEL_MODE_ANY      = "any"
-    CHANNEL_MODES = [CHANNEL_MODE_SECURE, CHANNEL_MODE_INSECURE,
-                     CHANNEL_MODE_ANY]
 
     KEYMAP_LOCAL = "local"
     KEYMAP_DEFAULT = "default"
@@ -97,8 +88,8 @@ class DeviceGraphics(Device):
         self._local_keymap = -1
 
 
-    _XML_PROP_ORDER = ["type", "gl", "port", "tlsPort", "autoport",
-                       "keymap", "listen",
+    _XML_PROP_ORDER = ["type", "gl", "_port", "_tlsPort", "autoport",
+                       "_keymap", "_listen",
                        "passwd", "display", "xauth"]
 
     def _get_local_keymap(self):
@@ -107,50 +98,37 @@ class DeviceGraphics(Device):
             self._local_keymap = hostkeymap.default_keymap()
         return self._local_keymap
 
-    def _set_keymap_converter(self, val):
+    def _set_keymap(self, val):
         if val == self.KEYMAP_DEFAULT:
             # Leave it up to the hypervisor
-            return None
-        if val == self.KEYMAP_LOCAL:
-            return self._get_local_keymap()
-        return val
-    keymap = XMLProperty("./@keymap", set_converter=_set_keymap_converter)
+            val = None
+        elif val == self.KEYMAP_LOCAL:
+            val = self._get_local_keymap()
+        self._keymap = val
+    def _get_keymap(self):
+        return self._keymap
+    _keymap = XMLProperty("./@keymap")
+    keymap = property(_get_keymap, _set_keymap)
 
-    def _set_port_converter(self, val):
+    def _set_port(self, val):
         val = _validate_port("Port", val)
         self.autoport = self._get_default_autoport()
-        return val
-    def _set_tlsport_converter(self, val):
+        self._port = val
+    def _get_port(self):
+        return self._port
+    _port = XMLProperty("./@port", is_int=True)
+    port = property(_get_port, _set_port)
+
+    def _set_tlsport(self, val):
         val = _validate_port("TLS Port", val)
         self.autoport = self._get_default_autoport()
-        return val
-    def _listen_need_port(self):
-        listen = self.get_first_listen_type()
-        return not listen or listen in ["address", "network"]
-    def _get_default_port(self):
-        if (self.type == "vnc" or self.type == "spice") and self._listen_need_port():
-            return -1
-        return None
-    def _get_default_tlsport(self):
-        if self.type == "spice" and self._listen_need_port():
-            return -1
-        return None
-    def _get_default_autoport(self):
-        # By default, don't do this for VNC to maintain back compat with
-        # old libvirt that didn't support 'autoport'
-        if self.type != "spice":
-            return None
-        if (self.port == -1 and self.tlsPort == -1):
-            return True
-        return None
-    port = XMLProperty("./@port", is_int=True,
-            set_converter=_set_port_converter,
-            default_cb=_get_default_port)
-    tlsPort = XMLProperty("./@tlsPort", is_int=True,
-            set_converter=_set_tlsport_converter,
-            default_cb=_get_default_tlsport)
-    autoport = XMLProperty("./@autoport", is_yesno=True,
-                           default_cb=_get_default_autoport)
+        self._tlsPort = val
+    def _get_tlsport(self):
+        return self._tlsPort
+    _tlsPort = XMLProperty("./@tlsPort", is_int=True)
+    tlsPort = property(_get_tlsport, _set_tlsport)
+
+    autoport = XMLProperty("./@autoport", is_yesno=True)
 
     channel_main_mode = _get_mode_prop(CHANNEL_TYPE_MAIN)
     channel_display_mode = _get_mode_prop(CHANNEL_TYPE_DISPLAY)
@@ -159,38 +137,26 @@ class DeviceGraphics(Device):
     channel_playback_mode = _get_mode_prop(CHANNEL_TYPE_PLAYBACK)
     channel_record_mode = _get_mode_prop(CHANNEL_TYPE_RECORD)
 
-
-    def _get_default_display(self):
-        if self.type != "sdl":
-            return None
-        if "DISPLAY" not in os.environ:
-            raise RuntimeError("No DISPLAY environment variable set.")
-        return os.environ["DISPLAY"]
-    def _get_default_xauth(self):
-        if self.type != "sdl":
-            return None
-        return os.path.expanduser("~/.Xauthority")
-    xauth = XMLProperty("./@xauth",
-                        default_cb=_get_default_xauth)
-    display = XMLProperty("./@display",
-                          default_cb=_get_default_display)
+    xauth = XMLProperty("./@xauth")
+    display = XMLProperty("./@display")
 
 
     def _set_listen(self, val):
         # Update the corresponding <listen> block
         find_listen = [l for l in self.listens if
-                       (l.type == "address" and l.address == self.listen)]
+                       (l.type == "address" and l.address == self._listen)]
         if find_listen:
             if val is None:
                 self.remove_child(find_listen[0])
             else:
                 find_listen[0].address = val
-        return val
-    listen = XMLProperty("./@listen", set_converter=_set_listen)
+        self._listen = val
+    def _get_listen(self):
+        return self._listen
+    _listen = XMLProperty("./@listen")
+    listen = property(_get_listen, _set_listen)
 
-    type = XMLProperty("./@type",
-                       default_cb=lambda s: "vnc",
-                       default_name="default")
+    type = XMLProperty("./@type")
     passwd = XMLProperty("./@passwd")
     passwdValidTo = XMLProperty("./@passwdValidTo")
     socket = XMLProperty("./@socket")
@@ -228,3 +194,95 @@ class DeviceGraphics(Device):
     filetransfer_enable = XMLProperty("./filetransfer/@enable", is_yesno=True)
     gl = XMLProperty("./gl/@enable", is_yesno=True)
     rendernode = XMLProperty("./gl/@rendernode")
+
+
+    ##################
+    # Default config #
+    ##################
+
+    def _spice_supported(self):
+        if not self.conn.is_qemu() and not self.conn.is_test():
+            return False
+        # Spice has issues on some host arches, like ppc, so whitelist it
+        if self.conn.caps.host.cpu.arch not in ["i686", "x86_64"]:
+            return False
+        return True
+
+    def _listen_need_port(self):
+        listen = self.get_first_listen_type()
+        return not listen or listen in ["address", "network"]
+
+    def _get_default_port(self):
+        if self.type in ["vnc", "spice"] and self._listen_need_port():
+            return -1
+        return None
+
+    def _get_default_tlsport(self):
+        if self.type == "spice" and self._listen_need_port():
+            return -1
+        return None
+
+    def _get_default_autoport(self):
+        # By default, don't do this for VNC to maintain back compat with
+        # old libvirt that didn't support 'autoport'
+        if self.type != "spice":
+            return None
+        if (self.port == -1 and self.tlsPort == -1):
+            return True
+        return None
+
+    def _default_type(self, guest):
+        gtype = guest.default_graphics_type
+        logging.debug("Using default_graphics=%s", gtype)
+        if gtype == "spice" and not self._spice_supported():
+            logging.debug("spice requested but HV doesn't support it. "
+                          "Using vnc.")
+            gtype = "vnc"
+        return gtype
+
+    def _default_image_compression(self, _guest):
+        if self.type != "spice":
+            return None
+        if not self.conn.is_remote():
+            logging.debug("Local connection, disabling spice image "
+                "compression.")
+            return "off"
+        return None
+
+    def _default_spice_gl(self, _guest):
+        if not self.conn.check_support(
+                self.conn.SUPPORT_CONN_SPICE_GL):
+            raise ValueError(_("Host does not support spice GL"))
+
+        # If spice GL but rendernode wasn't specified, hardcode
+        # the first one
+        if not self.rendernode and self.conn.check_support(
+                self.conn.SUPPORT_CONN_SPICE_RENDERNODE):
+            for nodedev in self.conn.fetch_all_nodedevs():
+                if (nodedev.device_type != 'drm' or
+                    nodedev.drm_type != 'render'):
+                    continue
+                self.rendernode = nodedev.get_devnode().path
+                break
+
+    def set_defaults(self, guest):
+        if not self.type:
+            self.type = self._default_type(guest)
+
+        if self.type == "sdl":
+            if not self.xauth:
+                self.xauth = os.path.expanduser("~/.Xauthority")
+            if not self.display:
+                self.display = os.environ.get("DISPLAY")
+
+        if self.port is None:
+            self.port = self._get_default_port()
+        if self.tlsPort is None:
+            self.tlsPort = self._get_default_tlsport()
+        if self.autoport is None:
+            self.autoport = self._get_default_autoport()
+
+        if not self.image_compression:
+            self.image_compression = self._default_image_compression(guest)
+        if self.type == "spice" and self.gl:
+            self._default_spice_gl(guest)

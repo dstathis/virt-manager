@@ -22,10 +22,8 @@ def _setup_i18n():
     gettext.bindtextdomain("virt-manager", _CLIConfig.gettext_dir)
 
 _setup_i18n()
-stable_defaults = _CLIConfig.stable_defaults
 
 from virtinst import util
-from virtinst import support
 from virtinst.uri import URI
 from virtinst.osdict import OSDB
 
@@ -40,10 +38,7 @@ from virtinst.storage import StoragePool, StorageVolume
 
 from virtinst.devices import *  # pylint: disable=wildcard-import
 
-from virtinst.installer import (ContainerInstaller, ImportInstaller,
-                                PXEInstaller, Installer)
-
-from virtinst.distroinstaller import DistroInstaller
+from virtinst.installer import Installer
 
 from virtinst.guest import Guest
 from virtinst.cloner import Cloner
